@@ -22,6 +22,7 @@ from .resolver_registry import (
 )
 from .ruby_resolution import resolve_ruby_member_calls
 from .pascal_resolution import resolve_pascal_inherited_calls
+from .preside_resolution import resolve_cfml_framework
 
 # --- migrated to graphify/extractors/ (see graphify/extractors/MIGRATION.md) ---
 from graphify.extractors.base import (  # noqa: F401
@@ -2978,6 +2979,17 @@ register_language_resolver(
         "pascal_inherited_calls",
         frozenset({".pas", ".pp", ".dpr", ".dpk", ".inc"}),
         resolve_pascal_inherited_calls,
+    )
+)
+# ColdBox/Preside framework resolution for CFML corpora: extends= dotted
+# mapping paths, project→extension→core override chains, WireBox inject=
+# receiver-typed member calls, super() chains, handler→view conventions.
+# Lives in graphify.preside_resolution; same seam as the Pascal resolver.
+register_language_resolver(
+    LanguageResolver(
+        "cfml_framework",
+        frozenset({".cfc", ".cfm", ".cfml"}),
+        resolve_cfml_framework,
     )
 )
 
