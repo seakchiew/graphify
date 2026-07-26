@@ -33,6 +33,7 @@ from graphify.extractors.base import (  # noqa: F401
 from graphify.extractors.apex import extract_apex  # noqa: F401
 from graphify.extractors.bash import extract_bash  # noqa: F401
 from graphify.extractors.blade import extract_blade  # noqa: F401
+from graphify.extractors.cfml import extract_cfml  # noqa: F401
 from graphify.extractors.csharp import (
     CsharpNameResolver,
     _resolve_cross_file_csharp_imports,
@@ -1810,6 +1811,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".dart": "dart",
     ".sh": "shell", ".bash": "shell",
     ".ps1": "powershell", ".psm1": "powershell", ".psd1": "powershell",
+    ".cfc": "cfml", ".cfm": "cfml", ".cfml": "cfml",
 }
 
 
@@ -4050,6 +4052,7 @@ _DISPATCH: dict[str, Any] = {
     ".svh": extract_verilog,
     ".sql": extract_sql,
     ".md": extract_markdown,
+    ".markdown": extract_markdown,
     ".mdx": extract_markdown,
     ".qmd": extract_markdown,
     ".skill": extract_markdown,
@@ -4083,6 +4086,9 @@ _DISPATCH: dict[str, Any] = {
     ".cshtml": extract_razor,
     ".cls": extract_apex,
     ".trigger": extract_apex,
+    ".cfc": extract_cfml,
+    ".cfm": extract_cfml,
+    ".cfml": extract_cfml,
 }
 
 
