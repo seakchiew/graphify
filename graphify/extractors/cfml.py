@@ -441,7 +441,8 @@ def extract_cfml(path: Path) -> dict:
                 if prop_node is not None:
                     callee = _read_text(prop_node, src)
                     receiver = ""
-                    if obj_node is not None and obj_node.type == "identifier":
+                    # `super` is its own node type in the grammar, not an identifier
+                    if obj_node is not None and obj_node.type in ("identifier", "super"):
                         receiver = _read_text(obj_node, src)
                     bare_recv = receiver.lstrip("$").lower()
                     if receiver and bare_recv not in ("helpers", "this", "variables", "arguments", "event", "rc", "prc") \
