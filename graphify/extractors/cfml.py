@@ -280,7 +280,11 @@ def extract_cfml(path: Path) -> dict:
     def add_stub(name: str, **extra) -> str:
         """Sourceless stub for a cross-file target (extends base, injected
         service, preside object) — the corpus-level rewire collapses it onto
-        the real definition when one exists (#1402 pattern)."""
+        the real definition when one exists (#1402 pattern). ``type=module``
+        exempts the stub from id-disambiguation (#1327): the same service or
+        preside object referenced from N files is one shared entity, and
+        salting it apart per referencing file would fragment the DI /
+        data-layer map into per-file duplicates."""
         nid = _make_id(name)
         if nid not in seen_ids:
             seen_ids.add(nid)
@@ -288,6 +292,7 @@ def extract_cfml(path: Path) -> dict:
                 "id": nid,
                 "label": name,
                 "file_type": "code",
+                "type": "module",
                 "source_file": "",
                 "source_location": "",
                 "origin_file": str_path,
