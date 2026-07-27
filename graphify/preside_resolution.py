@@ -36,9 +36,14 @@ import re
 from pathlib import PurePosixPath
 
 
-# application/<kind>/... with an optional extensions/<ext>/ segment in front.
+# application/<kind>/... with an optional extension segment in front.
+# Two extension roots exist in the wild: `extensions/` (installed by CommandBox,
+# gitignored, read-only) and `extensions_app/` (project-authored extensions,
+# git-tracked — the client's own code). They occupy different tiers: a file in
+# application/<kind>/ overrides one in extensions_app/, which overrides one in
+# extensions/, which overrides core.
 _CONVENTION_RE = re.compile(
-    r"(?:^|/)application/(?:extensions/(?P<ext>[^/]+)/)?"
+    r"(?:^|/)application/(?:(?P<extroot>extensions|extensions_app)/(?P<ext>[^/]+)/)?"
     r"(?P<kind>handlers|services|views|layouts|preside-objects|forms|i18n|base|interceptors|helpers)/"
     r"(?P<rest>.+)$",
     re.IGNORECASE,
@@ -58,17 +63,22 @@ def _norm(source_file: object) -> str:
 def _convention_key(source_file: object):
     """(kind, rest_lower, tier, ext_name) for a file under a convention folder.
 
-    tier 0 = project ``application/…``, 1 = ``application/extensions/<x>/…``,
-    2 = Preside core. None when the file is outside any convention folder.
+    Resolution tiers, lowest wins: 0 = project ``application/<kind>/…``,
+    1 = ``application/extensions_app/<x>/…`` (project-authored extension),
+    2 = ``application/extensions/<x>/…`` (installed), 3 = Preside core.
+    None when the file is outside any convention folder.
     """
     path = _norm(source_file)
     m = _CONVENTION_RE.search(path)
     if m:
-        tier = 1 if m.group("ext") else 0
+        if not m.group("ext"):
+            tier = 0
+        else:
+            tier = 1 if m.group("extroot").lower() == "extensions_app" else 2
         return m.group("kind").lower(), m.group("rest").lower(), tier, m.group("ext") or ""
     m = _CORE_RE.search(path)
     if m:
-        return m.group("kind").lower(), m.group("rest").lower(), 2, ""
+        return m.group("kind").lower(), m.group("rest").lower(), 3, ""
     return None
 
 
