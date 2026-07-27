@@ -194,6 +194,67 @@ _INTERCEPTION_POINT_DECL_RE = re.compile(
     r"""customInterceptionPoints\s*(?:\.\s*append\s*\(|\s*,)\s*["']([\w]+)["']""",
     re.IGNORECASE,
 )
+# WireBox constructor injection declared as a docblock annotation above init():
+#     /**
+#      * @formsService.inject        FormsService
+#      * @blDocTypes.inject          coldbox:setting:bluelight.blDocTypes
+#      */
+#     public any function init( required any formsService, ... )
+# Semantically identical to `property name="x" inject="y"` but invisible to the
+# property walker. Across six Preside corpora this form carried 5-32% of all DI
+# wiring (cbi 221 of 683), so an inject model that only reads properties loses a
+# third of the dependency graph on docblock-heavy extensions.
+_DOCBLOCK_INJECT_RE = re.compile(
+    r"""^[^\S\n]*\*?[^\S\n]*@(?P<arg>[A-Za-z_]\w*)\.inject[^\S\n]+(?P<dsl>\S+)""",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+# WireBox DSL namespaces that resolve to something other than a component:
+# a config value, a logger, a cache region, a framework singleton. Injecting one
+# is not a dependency on a CFC, so it must not mint a component stub.
+_WIREBOX_NON_COMPONENT_NS = frozenset({
+    "coldbox", "logbox", "cachebox", "wirebox", "java", "javaloader", "box",
+})
+# Lazy wrappers — the payload is another DSL string, unwrapped recursively.
+_WIREBOX_LAZY_NS = frozenset({"provider", "delayedinjector"})
+
+
+def _wirebox_target(dsl: str) -> tuple[str, str]:
+    """Resolve an ``inject=`` DSL string to ``(kind, name)``.
+
+    ``kind`` is ``"component"``, ``"preside_object"``, or ``""`` when the DSL
+    injects something that is not a graph node (a setting, logger or cache).
+    Both injection forms — ``property inject=`` and the ``@arg.inject`` docblock
+    — route through here.
+
+    Naively taking the last colon-segment turns ``coldbox:setting:foo.bar`` into
+    a component named ``setting:foo.bar``; on one corpus that minted 116 phantom
+    nodes, which then compete with real components in retrieval.
+    """
+    value = (dsl or "").strip()
+    for _ in range(4):  # provider:delayedInjector:X nests, but not deeply
+        if ":" not in value:
+            break
+        head, rest = value.split(":", 1)
+        head, rest = head.strip().lower(), rest.strip()
+        if head in _WIREBOX_LAZY_NS:
+            value = rest
+            continue
+        if head == "presidecms":
+            # presidecms:object:foo is the same data-layer dependency that
+            # getPresideObject("foo") expresses — point at the same hub.
+            sub, _, obj = rest.partition(":")
+            if sub.strip().lower() == "object" and obj.strip():
+                return "preside_object", obj.strip().lower()
+            return "", ""
+        if head in _WIREBOX_NON_COMPONENT_NS:
+            return "", ""
+        if head == "model":  # model:MyService — an explicit component id
+            value = rest
+            continue
+        break
+    return ("component", value) if value and ":" not in value else ("", "")
 # Viewlets and views are referenced by string, never by symbol:
 #   renderViewlet( event="cmsLayout._breadCrumbs", args=... )   -> a PRIVATE handler method
 #   renderView( view="/cmsLayout/_header", args=... )           -> a .cfm under views/
@@ -396,6 +457,11 @@ def extract_cfml(path: Path) -> dict:
 
     is_tag_style = source.lstrip()[:1] == b"<"
 
+    # The component node for a script-style CFC, once walk_script has seen it.
+    # Boxed so the nested walker can set it; read by the source-wide scans below,
+    # which need the component (not the file) as the edge owner.
+    script_component_nid: list[str | None] = [None]
+
     # label(lowercased) -> nid, for same-file call resolution
     local_functions: dict[str, str] = {}
     # (caller_nid, body_node, source_bytes, line_offset) — bodies walked after
@@ -410,10 +476,14 @@ def extract_cfml(path: Path) -> dict:
         if not inject:
             return
         # inject="delayedInjector:MyService" / "provider:x" / plain "MyService"
-        service = inject.split(":", 1)[-1].strip()
-        if not service:
+        kind, service = _wirebox_target(inject)
+        if not kind:
             return
         line = prop_node.start_point[0] + 1 + line_offset
+        if kind == "preside_object":
+            add_edge(owner_nid, add_stub(f"preside-object:{service}"), "uses",
+                     line, context="preside_object")
+            return
         stub = add_stub(service)
         add_edge(owner_nid, stub, "uses", line, context="wirebox_inject")
         if name:
@@ -443,6 +513,7 @@ def extract_cfml(path: Path) -> dict:
             add_node(comp_nid, comp_name, line,
                      **({"cfml_extends": attrs["extends"]} if attrs.get("extends") else {}))
             add_edge(file_nid, comp_nid, "contains", line)
+            script_component_nid[0] = comp_nid
             extends = attrs.get("extends", "")
             if extends:
                 base = extends.rsplit(".", 1)[-1]
@@ -611,6 +682,7 @@ def extract_cfml(path: Path) -> dict:
                              **({"cfml_extends": attrs["extends"]} if attrs.get("extends") else {}))
                     add_edge(file_nid, nid, "contains", line)
                     component_nid = nid
+                    script_component_nid[0] = nid
                     extends = attrs.get("extends", "")
                     if extends:
                         base = extends.rsplit(".", 1)[-1]
@@ -633,9 +705,13 @@ def extract_cfml(path: Path) -> dict:
                     inject = attrs.get("inject", "")
                     pname = attrs.get("name", "")
                     if inject:
-                        service = inject.split(":", 1)[-1].strip()
-                        if service:
-                            owner = component_nid or file_nid
+                        kind, service = _wirebox_target(inject)
+                        owner = component_nid or file_nid
+                        if kind == "preside_object":
+                            add_edge(owner, add_stub(f"preside-object:{service}"),
+                                     "uses", line, context="preside_object")
+                            service = ""
+                        elif kind:
                             stub = add_stub(service)
                             add_edge(owner, stub, "uses", line, context="wirebox_inject")
                             if pname:
@@ -737,6 +813,21 @@ def extract_cfml(path: Path) -> dict:
         if pair not in seen_call_pairs:
             seen_call_pairs.add(pair)
             add_edge(file_nid, stub, "declares", line, context="interception")
+
+    # Docblock constructor injection — same meaning as property inject=, so it
+    # emits the same edge and feeds the same receiver-typing map.
+    inject_owner = script_component_nid[0] or file_nid
+    for m in _DOCBLOCK_INJECT_RE.finditer(text):
+        kind, service = _wirebox_target(m.group("dsl"))
+        if not kind:
+            continue
+        line = text.count("\n", 0, m.start()) + 1
+        if kind == "preside_object":
+            add_edge(inject_owner, add_stub(f"preside-object:{service}"), "uses",
+                     line, context="preside_object")
+            continue
+        add_edge(inject_owner, add_stub(service), "uses", line, context="wirebox_inject")
+        inject_map.setdefault(m.group("arg").lower(), service)
 
     # String-referenced targets. Attributed to the function whose body contains
     # the match (byte-range lookup) so the edge starts at the real call site,

@@ -209,6 +209,43 @@ _LAYER_WEIGHTS = {
     "core": 0.85,           # Preside core — rarely the answer, never editable
 }
 
+
+def _layer_weights_for(G) -> dict:
+    """Layer weights for this graph, adapted to where its project code lives.
+
+    ``app`` outranks ``app-extension`` on the assumption that the project root
+    is the primary customisation site and ``extensions_app/`` a secondary tier.
+    On a fully modularised Preside app that is inverted: one measured corpus
+    keeps 3,966 nodes in ``extensions_app/`` against 38 in the project root, so
+    the default weights rank essentially all of its project code below a handful
+    of leftovers.
+
+    When ``app-extension`` holds more nodes than ``app`` it IS the project
+    layer, and is promoted to parity with ``app`` — parity, not above, because a
+    real project-root override still wins where one exists.
+
+    This is a *retrieval* judgement ("which file does the developer want"), not
+    a claim about load order. Preside precedence is decided by
+    ``ExtensionManagerService._sortExtensions``, which sorts both extension
+    directories together by manifest id and never reads ``isAppLocal``.
+    """
+    cached = G.graph.get("_layer_weights")
+    if cached is not None:
+        return cached
+    app = ext_app = 0
+    for _, data in G.nodes(data=True):
+        layer = data.get("layer")
+        if layer == "app":
+            app += 1
+        elif layer == "app-extension":
+            ext_app += 1
+    weights = dict(_LAYER_WEIGHTS)
+    if ext_app > app:
+        weights["app-extension"] = weights["app"]
+    G.graph["_layer_weights"] = weights
+    return weights
+
+
 _EXACT_MATCH_BONUS = 1000.0
 _PREFIX_MATCH_BONUS = 100.0
 _SUBSTRING_MATCH_BONUS = 1.0
@@ -433,6 +470,7 @@ def _score_query(
     best_by_term: dict[str, tuple[tuple, str]] | None = (
         {} if collect_per_term_seeds else None
     )
+    layer_weights = _layer_weights_for(G)
     for nid, data in node_iter:
         norm_label = data.get("norm_label") or _strip_diacritics(data.get("label") or "").lower()
         bare_label = norm_label.rstrip("()")
@@ -533,7 +571,7 @@ def _score_query(
         if tiered:
             score += tiered * (matched / n_terms) ** 2
         if score > 0:
-            score *= _LAYER_WEIGHTS.get(data.get("layer"), 1.0)
+            score *= layer_weights.get(data.get("layer"), 1.0)
             scored.append((score, nid))
     # Sort by score desc; break ties toward the shorter label so a concise exact
     # match beats a longer superset that happens to share the same score.
