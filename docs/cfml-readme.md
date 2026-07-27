@@ -225,9 +225,13 @@ project code plus ~40 installed extensions):
   reference project 481 of 647 resolved; the remainder are genuinely absent code.
 - **Injection resolution requires an unambiguous filename.** Two same-named services in
   different extensions with no project-level winner produce no edge rather than a guess.
-- **Not yet modelled:** form XML (`forms/**/*.xml`), i18n `.properties`, webflow `.yml`
-  step→handler wiring, and `Config.cfc` interceptor registrations. These are real Preside
-  semantics that a future pass could add.
+- **Declarative layers ARE modelled** (via `extractors/preside_assets.py`): form XML
+  (`forms/**/*.xml` → `form_binding` edges to preside-object hubs + form override chains),
+  i18n `.properties` (file-level nodes + `translateResource`/form-label `i18n_uri` edges
+  resolved to the bundle file), and webflow `.yml` (flow/step nodes with `event:` strings
+  resolved to handler action methods). Preside-object concept hubs additionally carry
+  `defines` edges from every file that declares the object (additive-merge semantics).
+- **Not yet modelled:** `Config.cfc` interceptor registrations.
 - `.cfhtml` and the standalone `cfquery` grammar ship with tree-sitter-cfml but are not
   wired up.
 

@@ -14,6 +14,11 @@ from graphify.extractors.apex import extract_apex
 from graphify.extractors.bash import extract_bash
 from graphify.extractors.blade import extract_blade
 from graphify.extractors.cfml import extract_cfml
+from graphify.extractors.preside_assets import (
+    extract_preside_form,
+    extract_properties,
+    extract_webflow,
+)
 from graphify.extractors.dart import extract_dart
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm
 from graphify.extractors.elixir import extract_elixir
@@ -40,6 +45,9 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "blade": extract_blade,
     "cfml": extract_cfml,
     "dart": extract_dart,
+    "preside_form": extract_preside_form,
+    "preside_i18n": extract_properties,
+    "preside_webflow": extract_webflow,
     "delphi_form": extract_delphi_form,
     "dm": extract_dm,
     "dmf": extract_dmf,

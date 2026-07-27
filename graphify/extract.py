@@ -35,6 +35,11 @@ from graphify.extractors.apex import extract_apex  # noqa: F401
 from graphify.extractors.bash import extract_bash  # noqa: F401
 from graphify.extractors.blade import extract_blade  # noqa: F401
 from graphify.extractors.cfml import extract_cfml  # noqa: F401
+from graphify.extractors.preside_assets import (  # noqa: F401
+    extract_preside_form,
+    extract_properties,
+    extract_webflow,
+)
 from graphify.extractors.csharp import (
     CsharpNameResolver,
     _resolve_cross_file_csharp_imports,
@@ -4229,6 +4234,16 @@ def _get_extractor(path: Path) -> Any | None:
     # (#1377). apm.yml would otherwise be a .yml document handled by the LLM.
     if is_package_manifest_path(path):
         return extract_package_manifest
+    # Preside framework assets, by path before generic suffix dispatch — the
+    # declarative layers of a Preside/ColdBox app (form XML, i18n bundles,
+    # webflow YAML). classify_file routes these to CODE with the same predicates.
+    from graphify.detect import is_preside_form_xml, is_preside_i18n_properties, is_preside_webflow_yml
+    if is_preside_form_xml(path):
+        return extract_preside_form
+    if is_preside_i18n_properties(path):
+        return extract_properties
+    if is_preside_webflow_yml(path):
+        return extract_webflow
     # `.h` is C/C++/ObjC-ambiguous; route Objective-C headers to extract_objc
     # (the suffix map sends `.h` to extract_c, which can't read @interface etc.).
     # ObjC sniffing has priority over the C++ sniff: an Objective-C++ header can

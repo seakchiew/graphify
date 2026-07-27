@@ -39,13 +39,13 @@ from pathlib import PurePosixPath
 # application/<kind>/... with an optional extensions/<ext>/ segment in front.
 _CONVENTION_RE = re.compile(
     r"(?:^|/)application/(?:extensions/(?P<ext>[^/]+)/)?"
-    r"(?P<kind>handlers|services|views|layouts|preside-objects|forms|base|interceptors|helpers)/"
+    r"(?P<kind>handlers|services|views|layouts|preside-objects|forms|i18n|base|interceptors|helpers)/"
     r"(?P<rest>.+)$",
     re.IGNORECASE,
 )
 _CORE_RE = re.compile(
     r"(?:^|/)preside/system/"
-    r"(?P<kind>handlers|services|views|layouts|preside-objects|forms|base|interceptors|helpers)/"
+    r"(?P<kind>handlers|services|views|layouts|preside-objects|forms|i18n|base|interceptors|helpers)/"
     r"(?P<rest>.+)$",
     re.IGNORECASE,
 )
@@ -110,10 +110,12 @@ def resolve_cfml_framework(
         comp_by_path.setdefault(path, []).append(c)
         comp_by_stem.setdefault(PurePosixPath(path).stem, []).append(c)
 
+    # .xml (forms — full-replacement overrides) and .properties (i18n — also
+    # full-replacement) participate in the convention chain alongside CFML.
     file_nodes = {
         _norm(n.get("source_file")).lower(): n
         for n in all_nodes
-        if str(n.get("label", "")).lower().endswith((".cfc", ".cfm"))
+        if str(n.get("label", "")).lower().endswith((".cfc", ".cfm", ".xml", ".properties"))
         and n.get("source_file")
     }
 
@@ -267,6 +269,82 @@ def resolve_cfml_framework(
                       "calls" if method_nid else "references", "injected_call",
                       source_file=rc.get("source_file", ""),
                       location=rc.get("source_location"))
+
+    # ---- 6pre. preside-object stubs ← their defining object CFCs ------------
+    # The `preside-object:<name>` stub stays a concept hub (additive merge:
+    # project AND extension files both define the object, so binding the stub
+    # to one file would misrepresent the semantics). Instead every definer
+    # gets a `defines` edge INTO the hub, linking the data-layer map to the
+    # actual definitions.
+    po_stubs = {
+        str(n.get("label", ""))[15:]: n
+        for n in all_nodes
+        if not n.get("source_file") and str(n.get("label", "")).startswith("preside-object:")
+    }
+    if po_stubs:
+        for path, group in comp_by_path.items():
+            key = _convention_key(path)
+            if key is None or key[0] != "preside-objects" or len(group) != 1:
+                continue
+            stem_name = PurePosixPath(path).stem
+            stub = po_stubs.get(stem_name)
+            if stub is not None:
+                _emit(group[0], stub, "defines", "preside_object")
+
+    # ---- 6a. i18n uri stubs → .properties file nodes ------------------------
+    # Stub label `i18n:<prefix>` (from translateResource captures and form
+    # label attributes); prefix "invoicing" → i18n/invoicing.properties,
+    # "preside-objects.server" → i18n/preside-objects/server.properties.
+    properties_files = {
+        path: fnode for path, fnode in
+        ((_norm(n.get("source_file")).lower(), n) for n in all_nodes)
+        if path.endswith(".properties")
+    }
+    if properties_files:
+        i18n_stubs = {
+            n["id"]: str(n.get("label", ""))[5:]
+            for n in all_nodes
+            if not n.get("source_file") and str(n.get("label", "")).startswith("i18n:")
+        }
+        for stub_id, prefix in i18n_stubs.items():
+            suffix = "/i18n/" + prefix.replace(".", "/").lower() + ".properties"
+            hits = [f for path, f in properties_files.items() if path.endswith(suffix)]
+            if len(hits) > 1:
+                # override chain: project wins (same rule as services)
+                project = [f for f in hits
+                           if (_convention_key(f.get("source_file")) or (None, None, 9))[2] == 0]
+                hits = project if len(project) == 1 else hits
+            if len(hits) == 1:
+                target_id = hits[0]["id"]
+                for edge in all_edges:
+                    if edge.get("target") == stub_id:
+                        edge["target"] = target_id
+
+    # ---- 6b. webflow event stubs → handler action methods -------------------
+    # Stub attr cfml_event_path "admin.webflow.newProjectSetup.standardInfo" →
+    # handlers/admin/webflow/newProjectSetup.cfc :: standardInfo(). Convention:
+    # last segment is the action, the rest is the handler path.
+    handler_files: dict[str, dict] = {}
+    for path, group in comp_by_path.items():
+        key = _convention_key(path)
+        if key and key[0] == "handlers" and len(group) == 1:
+            rest = key[1][:-4] if key[1].endswith(".cfc") else key[1]
+            handler_files.setdefault(rest, group[0])
+    for node in all_nodes:
+        event = node.get("cfml_event_path")
+        if not event or node.get("source_file"):
+            continue
+        parts = [p for p in str(event).lower().split(".") if p]
+        if len(parts) < 2:
+            continue
+        comp = handler_files.get("/".join(parts[:-1]))
+        if comp is None:
+            continue
+        method_nid = method_index.get((comp["id"], parts[-1]))
+        target_id = method_nid or comp["id"]
+        for edge in all_edges:
+            if edge.get("target") == node["id"]:
+                edge["target"] = target_id
 
     # ---- 6. handler action → convention view -------------------------------
     view_files = {

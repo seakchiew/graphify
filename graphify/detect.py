@@ -472,6 +472,25 @@ def _shebang_file_type(path: Path) -> FileType | None:
     return None
 
 
+def _posix_lower(path: Path) -> str:
+    return path.as_posix().lower()
+
+
+def is_preside_form_xml(path: Path) -> bool:
+    """Preside form definition: any .xml under a /forms/ directory."""
+    return path.suffix.lower() == ".xml" and "/forms/" in _posix_lower(path)
+
+
+def is_preside_i18n_properties(path: Path) -> bool:
+    """Preside i18n bundle: any .properties under an /i18n/ directory."""
+    return path.suffix.lower() == ".properties" and "/i18n/" in _posix_lower(path)
+
+
+def is_preside_webflow_yml(path: Path) -> bool:
+    """CfFlow webflow definition: .yml/.yaml under workflow/webflows/."""
+    return path.suffix.lower() in (".yml", ".yaml") and "workflow/webflows/" in _posix_lower(path)
+
+
 def classify_file(path: Path) -> FileType | None:
     # Package manifests (apm.yml, pyproject.toml, go.mod, pom.xml) are parsed
     # deterministically, so route them to the AST path (CODE) rather than the LLM
@@ -479,6 +498,12 @@ def classify_file(path: Path) -> FileType | None:
     # and a package would split into duplicate file-anchored nodes (#1377).
     from graphify.manifest_ingest import is_package_manifest_path
     if is_package_manifest_path(path):
+        return FileType.CODE
+    # Preside framework assets are parsed deterministically (same rationale as
+    # manifests): form XML, i18n .properties, and webflow YAML carry the
+    # declarative semantics of a Preside app and must reach the AST path —
+    # .yml would otherwise be LLM-extracted and .xml/.properties skipped.
+    if is_preside_form_xml(path) or is_preside_i18n_properties(path) or is_preside_webflow_yml(path):
         return FileType.CODE
     # Compound extensions must be checked before simple suffix lookup
     if path.name.lower().endswith(".blade.php"):

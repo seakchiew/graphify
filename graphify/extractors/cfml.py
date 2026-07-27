@@ -240,6 +240,24 @@ def _string_literal_arg(call_node, source: bytes) -> str | None:
     return None
 
 
+def _named_or_first_string_arg(call_node, source: bytes, name: str) -> str | None:
+    """A ``name="literal"`` named argument, else the first positional string.
+
+    CFML call sites use both shapes interchangeably —
+    ``translateResource( uri="x:y" )`` and ``translateResource( "x:y" )``."""
+    args = call_node.child_by_field_name("arguments")
+    if args is None:
+        return None
+    for child in args.children:
+        if child.type == "assignment_expression":
+            parts = [c for c in child.children if c.is_named]
+            if len(parts) >= 2 and parts[0].type == "identifier" \
+                    and _read_text(parts[0], source).lower() == name \
+                    and parts[-1].type == "string":
+                return _read_text(parts[-1], source).strip().strip("\"'")
+    return _string_literal_arg(call_node, source)
+
+
 def extract_cfml(path: Path) -> dict:
     """Extract components, functions, extends/inject/include relationships and
     calls from a CFML file (script or tag style)."""
@@ -420,6 +438,20 @@ def extract_cfml(path: Path) -> dict:
                         if pair not in seen_call_pairs:
                             seen_call_pairs.add(pair)
                             add_edge(caller_nid, stub, "uses", line, context="preside_object")
+                elif bare == "translateresource":
+                    # capture the i18n uri prefix (the bundle) — the code →
+                    # label-layer linkage; the resolution pass binds the stub
+                    # to the .properties file node. `cms:` is Preside core's
+                    # own bundle (excluded from the corpus) — skip it.
+                    uri = _named_or_first_string_arg(node, src, "uri")
+                    if uri and ":" in uri:
+                        prefix = uri.split(":", 1)[0].lower()
+                        if prefix and prefix != "cms":
+                            stub = add_stub(f"i18n:{prefix}")
+                            pair = (caller_nid, stub)
+                            if pair not in seen_call_pairs:
+                                seen_call_pairs.add(pair)
+                                add_edge(caller_nid, stub, "uses", line, context="i18n_uri")
                 elif not _is_filtered_callee(callee):
                     tgt = local_functions.get(callee.lower())
                     if tgt and tgt != caller_nid:
