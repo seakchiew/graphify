@@ -35,6 +35,8 @@ from __future__ import annotations
 import re
 from pathlib import PurePosixPath
 
+from graphify.extractors.base import _make_id
+
 
 # application/<kind>/... with an optional extension segment in front.
 # Two extension roots exist in the wild: `extensions/` (installed by CommandBox,
@@ -473,6 +475,164 @@ def resolve_cfml_framework(
                 _emit(node_by_id[method_nid], hits[0], "references", "renders",
                       confidence="INFERRED", score=0.85)
 
+    # ---- 6c. interceptor registrations → the interceptor component ---------
+    # `interceptors.append({class="app.interceptors.Foo"})` carries a dotted
+    # mapping path, same shape as extends=, so reuse that resolver.
+    for node in list(all_nodes):
+        dotted = node.get("cfml_interceptor_class")
+        if not dotted or node.get("source_file"):
+            continue
+        for suffix in _mapping_path_suffixes(dotted):
+            comp = _component_for_suffix(suffix)
+            if comp is not None:
+                for edge in all_edges:
+                    if edge.get("target") == node["id"]:
+                        edge["target"] = comp["id"]
+                break
+
+    # ---- 6d. interceptor listener methods → interception points ------------
+    # ColdBox binds an interceptor to a point BY METHOD NAME — there is no
+    # registration for the binding itself, so without this the announce site
+    # and the code that runs in response are unconnected. Only bind methods on
+    # components that live in an interceptors/ folder (or are registered as
+    # interceptors) whose name matches a point some code actually announces:
+    # matching on name alone would bind every same-named method in the corpus.
+    point_stub_by_name = {
+        str(n.get("label", ""))[len("interception-point:"):].lower(): n
+        for n in all_nodes
+        if str(n.get("label", "")).startswith("interception-point:")
+    }
+    registered_ids = {
+        e.get("target") for e in all_edges if e.get("context") == "interceptor"
+    }
+    # ColdBox's binding rule IS the method name: a public method on an
+    # interceptor named `preRender` runs when `preRender` is announced. There
+    # is no registration for the binding, so every public method here is a
+    # listener and gets a hub — created on demand rather than matched against a
+    # fixed list, because the announcer is very often OUT of corpus (core
+    # ColdBox/Preside announces preRender, preSelectObjectData, onLoginSuccess
+    # …, and website/preside/ is not indexed). Matching only already-announced
+    # points would silently drop exactly the framework hooks people search for.
+    # `configure` is ColdBox's own lifecycle method, and `_`-prefixed methods
+    # are private helpers by house convention — neither is a listener.
+    for comp in components:
+        key = _convention_key(comp.get("source_file"))
+        stem = PurePosixPath(_norm(comp.get("source_file")).lower()).stem
+        is_interceptor = (key is not None and key[0] == "interceptors") \
+            or comp["id"] in registered_ids \
+            or stem.endswith("interceptor") or stem.endswith("interceptors")
+        if not is_interceptor:
+            continue
+        for (owner, mname), method_nid in method_index.items():
+            if owner != comp["id"] or mname.startswith("_") or mname == "configure":
+                continue
+            stub = point_stub_by_name.get(mname)
+            if stub is None:
+                label = str(node_by_id[method_nid].get("label", "")).removesuffix("()")
+                stub_id = _make_id(f"interception-point:{label}")
+                stub = node_by_id.get(stub_id)
+                if stub is None:
+                    stub = {
+                        "id": stub_id,
+                        "label": f"interception-point:{label}",
+                        "file_type": "code",
+                        "type": "module",
+                        "source_file": "",
+                        "source_location": "",
+                        "origin_file": comp.get("source_file", ""),
+                    }
+                    all_nodes.append(stub)
+                    node_by_id[stub_id] = stub
+                point_stub_by_name[mname] = stub
+            _emit(node_by_id[method_nid], stub, "listens_to", "interception")
+
+    # ---- 6c2. viewlet / view / runEvent string targets ---------------------
+    # `renderViewlet( event="cmsLayout._breadCrumbs" )` names a handler action
+    # by dotted convention path — usually a PRIVATE method, which nothing else
+    # in the graph references, so without this every viewlet implementation is
+    # an orphan. `renderView( view="/cmsLayout/_header" )` names a .cfm under
+    # some layer's views/ root. Both resolve through the same project →
+    # extension → core search the framework itself performs.
+    handler_comp_by_rest: dict[str, list[dict]] = {}
+    for path, group in comp_by_path.items():
+        key = _convention_key(path)
+        if key and key[0] == "handlers":
+            rest = key[1][:-4] if key[1].endswith(".cfc") else key[1]
+            handler_comp_by_rest.setdefault(rest, []).extend(group)
+
+    view_by_rest: dict[str, list[dict]] = {}
+    for path, fnode in file_nodes.items():
+        key = _convention_key(path)
+        if key and key[0] in ("views", "layouts") and key[1].endswith(".cfm"):
+            view_by_rest.setdefault(key[1][:-4], []).append(fnode)
+
+    def _pick_lowest_tier(hits: list[dict]) -> dict | None:
+        if len(hits) == 1:
+            return hits[0]
+        if not hits:
+            return None
+        ranked = sorted(
+            hits, key=lambda f: (_convention_key(f.get("source_file")) or (None, None, 9))[2]
+        )
+        best = (_convention_key(ranked[0].get("source_file")) or (None, None, 9))[2]
+        top = [f for f in ranked
+               if (_convention_key(f.get("source_file")) or (None, None, 9))[2] == best]
+        return top[0] if len(top) == 1 else None
+
+    for node in list(all_nodes):
+        if node.get("source_file"):
+            continue
+        target = None
+        dotted = node.get("cfml_viewlet_event")
+        if dotted:
+            parts = [p for p in str(dotted).lower().split(".") if p]
+            if len(parts) >= 2:
+                comp = _pick_lowest_tier(handler_comp_by_rest.get("/".join(parts[:-1]), []))
+                if comp is not None:
+                    method_nid = method_index.get((comp["id"], parts[-1]))
+                    target = node_by_id.get(method_nid) if method_nid else comp
+        else:
+            vpath = node.get("cfml_view_path")
+            if vpath:
+                rest = str(vpath).lower().lstrip("/")
+                target = _pick_lowest_tier(view_by_rest.get(rest, []))
+        if target is not None:
+            for edge in all_edges:
+                if edge.get("target") == node["id"]:
+                    edge["target"] = target["id"]
+
+    # ---- 6e. bare helper UDF calls → the helper function -------------------
+    # ColdBox cfincludes every /helpers/*.cfm into handler/view scope, so those
+    # UDFs are called bare with no import, no receiver and no registration —
+    # invisible to the extractor's same-file call resolution. Bind unresolved
+    # bare calls to a uniquely-named helper UDF.
+    helper_fn_by_name: dict[str, list[str]] = {}
+    for e in all_edges:
+        if e.get("relation") not in ("contains", "method"):
+            continue
+        tgt = node_by_id.get(e.get("target"))
+        if tgt is None:
+            continue
+        src_path = _norm(tgt.get("source_file")).lower()
+        if "/helpers/" not in src_path:
+            continue
+        label = str(tgt.get("label", ""))
+        if label.endswith("()"):
+            helper_fn_by_name.setdefault(label[:-2].lower(), []).append(tgt["id"])
+    if helper_fn_by_name:
+        for rc in cfml_raw:
+            if rc.get("is_member_call") or rc.get("is_super_call"):
+                continue
+            caller = rc.get("caller_nid")
+            callee = str(rc.get("callee", "")).lower()
+            if not caller or caller not in node_by_id:
+                continue
+            targets = helper_fn_by_name.get(callee, [])
+            if len(targets) == 1 and targets[0] != caller:
+                _emit(node_by_id[caller], node_by_id[targets[0]], "calls", "helper_udf",
+                      source_file=rc.get("source_file", ""),
+                      location=rc.get("source_location"))
+
     # ---- 7. drop stubs this pass orphaned ----------------------------------
     # Passes 1/3/6a/6b rewire an edge's target from a placeholder stub to the
     # real node. The stub itself then has no edges left and would ship as a
@@ -489,7 +649,9 @@ def resolve_cfml_framework(
         n for n in all_nodes
         if not n.get("source_file") and n.get("id") not in referenced
         and str(n.get("label", "")).split(":", 1)[0] in
-        ("preside-object", "i18n", "webflow-event", "webflow-ref", "webflow-form")
+        ("preside-object", "i18n", "webflow-event", "webflow-ref", "webflow-form",
+         "interception-point", "renders_viewlet", "renders_view", "sets_view",
+         "runs_event")
     ]
     if dead:
         dead_ids = {n["id"] for n in dead}

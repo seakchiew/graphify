@@ -1016,6 +1016,23 @@ def _query_graph_text(
     traversal_graph = _filter_graph_by_context(G, resolved_filters)
     _traverse = _dfs if mode == "dfs" else _bfs
     nodes, edges = _traverse(traversal_graph, start_nodes, depth)
+    # A HEURISTIC context filter is a guess made from the question's wording
+    # ("...demographic fields..." infers context=field). When that guess is
+    # wrong it does not merely re-rank — it deletes edges before traversal, so
+    # the answer becomes unreachable at any depth and the result collapses to a
+    # handful of nodes. An EXPLICIT filter the caller passed is honoured as
+    # given; only the inferred one is retracted, and only when it starved the
+    # traversal. Same principle as the undirected widening below.
+    if (
+        filter_source == "heuristic"
+        and resolved_filters
+        and len(nodes) < _WIDEN_BELOW_NODES
+    ):
+        unfiltered_nodes, unfiltered_edges = _traverse(G, start_nodes, depth)
+        if len(unfiltered_nodes) > len(nodes):
+            traversal_graph = G
+            nodes, edges = unfiltered_nodes, unfiltered_edges
+            resolved_filters, filter_source = [], None
     # Adaptive widening: the graph is directed, so a seed that is a LEAF in
     # edge direction (a method — the most numerous node kind, reached via
     # `contains`/`method` edges pointing INTO it) has no successors and forward

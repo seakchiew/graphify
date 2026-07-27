@@ -172,6 +172,57 @@ _PRESIDE_PROXIES: frozenset[str] = frozenset({
 _TAG_NAME_RE = re.compile(rb"^<cf(\w+)", re.IGNORECASE)
 _END_FUNCTION_RE = re.compile(rb"</cffunction\s*>", re.IGNORECASE)
 
+# ColdBox interceptor registration in a Config.cfc:
+#   interceptors.append( { class="app.interceptors.Foo", properties={} } );
+#   conf.interceptors.prepend( { class="app.extensions.x.interceptors.Bar" } );
+# Matched on raw source rather than the AST: the struct literal is a plain
+# argument expression, and the only part that carries graph meaning is the
+# dotted mapping path, which is a string literal in every real occurrence.
+_INTERCEPTOR_REG_RE = re.compile(
+    r"""(?:interceptors\s*\.\s*(?:append|prepend)\s*\(|"""
+    r"""Array(?:Append|Prepend)\s*\(\s*[\w.]*interceptors\s*,)"""
+    r"""\s*\{[^{}]*?\bclass\s*=\s*["']([^"']+)["']""",
+    re.IGNORECASE | re.DOTALL,
+)
+# `conf.interceptorSettings.customInterceptionPoints.append( "onFoo" )` and the
+# ArrayAppend( ..., "onFoo" ) form. This is the authoritative declaration of a
+# custom point — the extension announcing "I expose this hook" — so it anchors
+# the point hub even when announce and listen live in different extensions.
+# The `?: []` idempotency line is not a declaration; it has no string literal
+# so it cannot match.
+_INTERCEPTION_POINT_DECL_RE = re.compile(
+    r"""customInterceptionPoints\s*(?:\.\s*append\s*\(|\s*,)\s*["']([\w]+)["']""",
+    re.IGNORECASE,
+)
+# Viewlets and views are referenced by string, never by symbol:
+#   renderViewlet( event="cmsLayout._breadCrumbs", args=... )   -> a PRIVATE handler method
+#   renderView( view="/cmsLayout/_header", args=... )           -> a .cfm under views/
+#   runEvent( event="admin.DataManager._addRecordAction", ... ) -> cross-handler call
+#   event.setView( "/admin/datamanager/sortRecords" )
+# Between them these are the single largest class of real edges the AST cannot
+# see (≈3,100 renderView/renderViewlet sites in one project), and they are why
+# private handler methods and view templates otherwise sit as orphan nodes.
+# Interpolated targets (`_#tabId#TabTitle`) are skipped rather than guessed.
+_RENDER_VIEWLET_RE = re.compile(
+    r"""\brenderViewlet\s*\(\s*(?:[^)]*?[\s,])?event\s*=\s*["']([\w.\-]+)["']"""
+    r"""|\brenderViewlet\s*\(\s*["']([\w.\-]+)["']""",
+    re.IGNORECASE | re.DOTALL,
+)
+_RENDER_VIEW_RE = re.compile(
+    r"""\brenderView\s*\(\s*(?:[^)]*?[\s,])?view\s*=\s*["']([\w./\-]+)["']"""
+    r"""|\brenderView\s*\(\s*["']([\w./\-]+)["']""",
+    re.IGNORECASE | re.DOTALL,
+)
+_SET_VIEW_RE = re.compile(
+    r"""\bsetView\s*\(\s*(?:[^)]*?[\s,])?view\s*=\s*["']([\w./\-]+)["']"""
+    r"""|\bsetView\s*\(\s*["']([\w./\-]+)["']""",
+    re.IGNORECASE | re.DOTALL,
+)
+_RUN_EVENT_RE = re.compile(
+    r"""\brunEvent\s*\(\s*(?:[^)]*?[\s,])?event\s*=\s*["']([\w.\-]+)["']""",
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 def _attr_map(tag_node, source: bytes) -> dict[str, str]:
     """Collect ``cf_attribute`` name/value pairs from a cf tag node.
@@ -411,6 +462,16 @@ def extract_cfml(path: Path) -> dict:
                 line = node.start_point[0] + 1 + line_offset
                 func_nid = _make_id(stem, name) if owner_nid == file_nid else _make_id(owner_nid, name)
                 add_node(func_nid, f"{name}()", line)
+                # Byte range, used to attribute string-referenced targets
+                # (renderView/renderViewlet/runEvent) to the calling function.
+                # Only meaningful when the match offsets come from this same
+                # buffer, i.e. the top-level script parse (line_offset 0).
+                if line_offset == 0:
+                    for _n in nodes:
+                        if _n["id"] == func_nid:
+                            _n["_byte_start"] = node.start_byte
+                            _n["_byte_end"] = node.end_byte
+                            break
                 relation = "contains" if owner_nid == file_nid else "method"
                 add_edge(owner_nid, func_nid, relation, line)
                 local_functions[name.lower()] = func_nid
@@ -438,6 +499,19 @@ def extract_cfml(path: Path) -> dict:
                         if pair not in seen_call_pairs:
                             seen_call_pairs.add(pair)
                             add_edge(caller_nid, stub, "uses", line, context="preside_object")
+                elif bare in ("announceinterception", "_announceinterception"):
+                    # The announce site is one half of ColdBox's cross-cutting
+                    # wiring; the listener method in an interceptor is the
+                    # other. Both bind to a shared interception-point hub so
+                    # "what happens when X fires" becomes one hop instead of a
+                    # grep for the point name across the whole corpus.
+                    point = _named_or_first_string_arg(node, src, "state")
+                    if point and point.replace("_", "").isalnum():
+                        stub = add_stub(f"interception-point:{point}")
+                        pair = (caller_nid, stub)
+                        if pair not in seen_call_pairs:
+                            seen_call_pairs.add(pair)
+                            add_edge(caller_nid, stub, "announces", line, context="interception")
                 elif bare == "translateresource":
                     # capture the i18n uri prefix (the bundle) — the code →
                     # label-layer linkage; the resolution pass binds the stub
@@ -477,6 +551,20 @@ def extract_cfml(path: Path) -> dict:
                     if obj_node is not None and obj_node.type in ("identifier", "super"):
                         receiver = _read_text(obj_node, src)
                     bare_recv = receiver.lstrip("$").lower()
+                    # In handlers the announce goes through the event object —
+                    # `event.announceInterception( "point", args )` — so it
+                    # arrives as a member call, not the bare/$-prefixed form
+                    # handled above. Same hub either way.
+                    if callee.lower() == "announceinterception":
+                        point = _named_or_first_string_arg(node, src, "state")
+                        if point and point.replace("_", "").isalnum():
+                            stub = add_stub(f"interception-point:{point}")
+                            pair = (caller_nid, stub)
+                            if pair not in seen_call_pairs:
+                                seen_call_pairs.add(pair)
+                                add_edge(caller_nid, stub, "announces", line,
+                                         context="interception")
+                        return
                     if receiver and bare_recv not in ("helpers", "this", "variables", "arguments", "event", "rc", "prc") \
                             and not _is_filtered_callee(callee):
                         rc: dict = {
@@ -622,6 +710,69 @@ def extract_cfml(path: Path) -> dict:
 
     for caller_nid, body_node, src, line_offset in function_bodies:
         walk_calls(body_node, src, caller_nid, line_offset)
+
+    # ColdBox interceptor registrations (Config.cfc). Source-level scan, see
+    # _INTERCEPTOR_REG_RE. The dotted class path is resolved to the real
+    # component by preside_resolution, exactly like extends=.
+    try:
+        text = source.decode("utf-8", errors="replace")
+    except Exception:
+        text = ""
+    for m in _INTERCEPTOR_REG_RE.finditer(text):
+        class_path = m.group(1).strip()
+        if not class_path or "." not in class_path:
+            continue
+        line = text.count("\n", 0, m.start()) + 1
+        stub = add_stub(class_path.rsplit(".", 1)[-1], cfml_interceptor_class=class_path)
+        pair = (file_nid, stub)
+        if pair not in seen_call_pairs:
+            seen_call_pairs.add(pair)
+            add_edge(file_nid, stub, "registers", line, context="interceptor")
+
+    for m in _INTERCEPTION_POINT_DECL_RE.finditer(text):
+        point = m.group(1)
+        line = text.count("\n", 0, m.start()) + 1
+        stub = add_stub(f"interception-point:{point}")
+        pair = (file_nid, stub)
+        if pair not in seen_call_pairs:
+            seen_call_pairs.add(pair)
+            add_edge(file_nid, stub, "declares", line, context="interception")
+
+    # String-referenced targets. Attributed to the function whose body contains
+    # the match (byte-range lookup) so the edge starts at the real call site,
+    # falling back to the file node for template-level code outside any function.
+    ranges = sorted(
+        (n.get("_byte_start", -1), n.get("_byte_end", -1), n["id"])
+        for n in nodes if n.get("_byte_start") is not None
+    ) if any("_byte_start" in n for n in nodes) else []
+
+    def _owner_at(pos: int) -> str:
+        for start, end, nid in ranges:
+            if start <= pos < end:
+                return nid
+        return file_nid
+
+    for regex, relation, ctx, attr in (
+        (_RENDER_VIEWLET_RE, "references", "renders_viewlet", "cfml_viewlet_event"),
+        (_RENDER_VIEW_RE, "references", "renders_view", "cfml_view_path"),
+        (_SET_VIEW_RE, "references", "sets_view", "cfml_view_path"),
+        (_RUN_EVENT_RE, "references", "runs_event", "cfml_viewlet_event"),
+    ):
+        for m in regex.finditer(text):
+            target = (m.group(1) or (m.group(2) if regex.groups > 1 else None) or "").strip()
+            if not target or "#" in target:
+                continue  # interpolated target — do not guess
+            line = text.count("\n", 0, m.start()) + 1
+            stub = add_stub(f"{ctx}:{target}", **{attr: target})
+            owner = _owner_at(m.start())
+            pair = (owner, stub)
+            if pair not in seen_call_pairs:
+                seen_call_pairs.add(pair)
+                add_edge(owner, stub, relation, line, context=ctx)
+
+    for _n in nodes:
+        _n.pop("_byte_start", None)
+        _n.pop("_byte_end", None)
 
     valid_ids = seen_ids
     clean_edges = [e for e in edges
