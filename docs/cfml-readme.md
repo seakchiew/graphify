@@ -101,12 +101,24 @@ graphify --version
 python -c "import tree_sitter_cfml; print('ok')"
 ```
 
-If you installed graphify from a source checkout, use that checkout as the source so a
-later `uv tool upgrade` cannot silently replace it with the PyPI build:
+If you are working from a source checkout, install it **editable** so the checkout is
+the live source — edits take effect immediately, with no reinstall between changes:
 
 ```bash
-uv tool install --force --from /path/to/graphify graphifyy
+cd /path/to/graphify
+uv tool install --force --editable --from . graphifyy
 ```
+
+Confirm the binary resolves to your checkout rather than a built copy:
+
+```bash
+"$(dirname "$(readlink -f "$(command -v graphify)")")/python" \
+  -c "import graphify, os; print(os.path.dirname(graphify.__file__))"
+```
+
+Never run `uv tool upgrade graphifyy` against such an install — it replaces the editable
+link with the PyPI build and your local grammar work disappears. Re-run the install
+command above after pulling upstream changes.
 
 If the grammar is missing, CFML files still classify as code but the extractor returns
 `tree-sitter-cfml not installed` and produces no nodes for them.
