@@ -2382,7 +2382,30 @@ def dispatch_command(cmd: str) -> None:
     elif cmd == "benchmark":
         from graphify.benchmark import run_benchmark, print_benchmark
 
-        graph_path = sys.argv[2] if len(sys.argv) > 2 else _default_graph_path()
+        # benchmark [graph.json] [--questions FILE] — FILE is either a plain
+        # text file (one question per line) or a golden-set JSON with a
+        # top-level "questions" list of strings or {"question": ...} objects,
+        # so a project's .graphify-eval.json doubles as the benchmark input.
+        args = sys.argv[2:]
+        questions: list[str] | None = None
+        if "--questions" in args:
+            qi = args.index("--questions")
+            if qi + 1 >= len(args):
+                print("error: --questions requires a file path", file=sys.stderr)
+                sys.exit(2)
+            qpath = Path(args[qi + 1])
+            try:
+                raw = qpath.read_text(encoding="utf-8")
+            except OSError as e:
+                print(f"error: cannot read questions file: {e}", file=sys.stderr)
+                sys.exit(2)
+            if qpath.suffix.lower() == ".json":
+                loaded = json.loads(raw).get("questions", [])
+                questions = [q["question"] if isinstance(q, dict) else str(q) for q in loaded]
+            else:
+                questions = [line.strip() for line in raw.splitlines() if line.strip()]
+            args = args[:qi] + args[qi + 2:]
+        graph_path = args[0] if args else _default_graph_path()
         _enforce_graph_size_cap_or_exit(Path(graph_path))
         # Try to load corpus_words from detect output
         corpus_words = None
@@ -2393,7 +2416,7 @@ def dispatch_command(cmd: str) -> None:
                 corpus_words = detect_data.get("total_words")
             except Exception:
                 pass
-        result = run_benchmark(graph_path, corpus_words=corpus_words)
+        result = run_benchmark(graph_path, corpus_words=corpus_words, questions=questions)
         print_benchmark(result)
 
     elif cmd == "global":
