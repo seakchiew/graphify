@@ -522,14 +522,26 @@ def to_html(
     title = _html.escape(sanitize_label(str(output_path)))
     stats = f"{G.number_of_nodes()} nodes &middot; {G.number_of_edges()} edges &middot; {len(communities)} communities"
 
+    # Inline the vendored vis-network so graph.html is fully self-contained —
+    # it renders offline and inside CSP-restricted viewers that block external
+    # scripts (side panels, attachment previews, air-gapped machines). The CDN
+    # tag remains only as a fallback when the vendored copy is missing.
+    vendored = Path(__file__).parent / "vendor" / "vis-network.min.js"
+    if vendored.exists():
+        vis_script = "<script>\n" + vendored.read_text(encoding="utf-8").replace("</script", "<\\/script") + "\n</script>"
+    else:
+        vis_script = (
+            '<script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"\n'
+            '        integrity="sha384-Ux6phic9PEHJ38YtrijhkzyJ8yQlH8i/+buBR8s3mAZOJrP1gwyvAcIYl3GWtpX1"\n'
+            '        crossorigin="anonymous"></script>'
+        )
+
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <title>graphify - {title}</title>
-<script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"
-        integrity="sha384-Ux6phic9PEHJ38YtrijhkzyJ8yQlH8i/+buBR8s3mAZOJrP1gwyvAcIYl3GWtpX1"
-        crossorigin="anonymous"></script>
+{vis_script}
 {_html_styles()}
 </head>
 <body>
