@@ -197,26 +197,32 @@ tree changed underneath the graph.
 
 ---
 
-## Token cost
+## Token cost and answer accuracy
 
-Measure it rather than assuming:
-
-```bash
-graphify benchmark
-```
-
-On a mid-size Preside project this reports ~125× fewer tokens per query than feeding the
-corpus. To actually capture that saving, your assistant has to consult the graph before
-grepping — that is what `graphify claude install` sets up (a `PreToolUse` hook on
-Read/Grep plus a `CLAUDE.md` section).
-
-**Install those hooks only once the graph is good.** A mandatory "query the graph first"
-nudge pointing at an empty or half-built graph makes every session worse, not better.
-Verify first:
+Measure both rather than assuming. They are different numbers:
 
 ```bash
-graphify query "how does authentication work" --budget 800
+graphify benchmark                                  # efficiency: subgraph vs corpus tokens
+graphify benchmark --questions .graphify-eval.json  # same, on YOUR domain questions
 ```
+
+The benchmark runs the production query path. On a mid-size Preside project it reports
+~60× on generic questions and ~15× on real domain questions — a compression ratio, not a
+quality result. Correctness needs a golden set:
+
+```bash
+# 10-15 real questions with known answer files, at the project root
+# (see .graphify-eval.json format in tools/eval_retrieval.py)
+python tools/eval_retrieval.py ~/Projects/myclient        # hit@k, threshold 0.8
+```
+
+**The autonomy gate.** The mandatory "query the graph first" `PreToolUse` nudge that
+`graphify claude install` sets up must *earn* its place: install it only where the eval
+holds **hit@k ≥ 0.8**, and downgrade it to advisory (remove the hook, keep the CLAUDE.md
+section) if the score falls below on a re-run. A mandatory nudge pointing at a weak or
+half-built graph makes every session worse, not better. Re-run the eval after any
+extractor or scoring change — retrieval regressions are invisible until they burn a
+session.
 
 Cap output when you only need orientation; raise `--budget` when a subgraph gets
 truncated and the answer might be in the cut nodes.
