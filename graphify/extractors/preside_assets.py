@@ -44,6 +44,7 @@ _FORMS_PO_PATH_RE = re.compile(r"/forms/preside-objects/([\w-]+)/", re.IGNORECAS
 _WEBFLOW_ID_RE = re.compile(r"^\s*id:\s*([\w-]+)\s*$")
 _WEBFLOW_STEP_RE = re.compile(r"^\s*-\s+id:\s*([\w-]+)\s*$")
 _WEBFLOW_EVENT_RE = re.compile(r"^\s*event:\s*([\w.-]+)\s*$")
+_WEBFLOW_FORM_RE = re.compile(r"^\s*form:\s*([\w.-]+)\s*$")
 _WEBFLOW_REF_RE = re.compile(r"^\s*-\s+\$(?:subflowref|ref):\s*([\w-]+)\s*$")
 
 
@@ -224,6 +225,17 @@ def extract_webflow(path: Path) -> dict:
             stub = _add_stub(nodes, seen, f"webflow-ref:{rm.group(1)}", str_path)
             edges.append(_edge(flow_nid, stub, "references", "webflow_ref", str_path, lineno))
             current_owner = flow_nid
+            continue
+        fm = _WEBFLOW_FORM_RE.match(line)
+        if fm:
+            # `form: webflow.<flow>.<step>` → forms/webflow/<flow>/<step>.xml
+            # (resolved in preside_resolution); this is the step's own form
+            # definition — the structural spine of a join/application journey.
+            form_path = fm.group(1)
+            if "." in form_path:
+                stub = _add_stub(nodes, seen, f"webflow-form:{form_path}", str_path,
+                                 cfml_form_path=form_path)
+                edges.append(_edge(current_owner, stub, "uses", "webflow_form", str_path, lineno))
             continue
         em = _WEBFLOW_EVENT_RE.match(line)
         if em:

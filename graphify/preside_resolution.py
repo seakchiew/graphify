@@ -301,6 +301,29 @@ def resolve_cfml_framework(
         if path.endswith(".properties")
     }
     if properties_files:
+        # Convention linkage: Preside resolves an object's/page-type's labels by
+        # path, with no translateResource call to capture — i18n/preside-objects/
+        # <obj>.properties (and i18n/page-types/<obj>.properties) IS the label
+        # bundle for <obj>. Wire each bundle to the object's defining CFC when
+        # that file is in the corpus, else to the concept hub. Without this they
+        # are isolated nodes: real files, zero edges, invisible to every query.
+        object_cfc_by_stem: dict[str, list[dict]] = {}
+        for cpath, group in comp_by_path.items():
+            key = _convention_key(cpath)
+            if key and key[0] == "preside-objects":
+                object_cfc_by_stem.setdefault(PurePosixPath(cpath).stem, []).extend(group)
+        for path, fnode in properties_files.items():
+            marker = next((m for m in ("/i18n/preside-objects/", "/i18n/page-types/")
+                           if m in path), None)
+            if marker is None:
+                continue
+            obj = PurePosixPath(path[path.index(marker) + len(marker):]).stem
+            defs = object_cfc_by_stem.get(obj, [])
+            if len(defs) == 1:
+                _emit(fnode, defs[0], "uses", "i18n_bundle")
+            elif po_stubs and obj in po_stubs:
+                _emit(fnode, po_stubs[obj], "uses", "i18n_bundle")
+
         i18n_stubs = {
             n["id"]: str(n.get("label", ""))[5:]
             for n in all_nodes
@@ -318,6 +341,30 @@ def resolve_cfml_framework(
                 target_id = hits[0]["id"]
                 for edge in all_edges:
                     if edge.get("target") == stub_id:
+                        edge["target"] = target_id
+
+    # ---- 6a2. webflow form stubs → forms/<dotted path>.xml ------------------
+    # `form: webflow.<flow>.<step>` → forms/webflow/<flow>/<step>.xml. This is
+    # the step→form spine of a join/application journey; without it every step
+    # form is an isolated node and "what does step X ask for" is unanswerable.
+    form_files = {
+        path: fnode for path, fnode in file_nodes.items() if path.endswith(".xml")
+    }
+    if form_files:
+        for node in list(all_nodes):
+            dotted = node.get("cfml_form_path")
+            if not dotted or node.get("source_file"):
+                continue
+            suffix = "/forms/" + str(dotted).lower().replace(".", "/") + ".xml"
+            hits = [f for path, f in form_files.items() if path.endswith(suffix)]
+            if len(hits) > 1:
+                project = [f for f in hits
+                           if (_convention_key(f.get("source_file")) or (None, None, 9))[2] == 0]
+                hits = project if len(project) == 1 else hits
+            if len(hits) == 1:
+                target_id = hits[0]["id"]
+                for edge in all_edges:
+                    if edge.get("target") == node["id"]:
                         edge["target"] = target_id
 
     # ---- 6b. webflow event stubs → handler action methods -------------------
@@ -369,3 +416,25 @@ def resolve_cfml_framework(
             if len(hits) == 1:
                 _emit(node_by_id[method_nid], hits[0], "references", "renders",
                       confidence="INFERRED", score=0.85)
+
+    # ---- 7. drop stubs this pass orphaned ----------------------------------
+    # Passes 1/3/6a/6b rewire an edge's target from a placeholder stub to the
+    # real node. The stub itself then has no edges left and would ship as a
+    # dead node — noise in the viz, in god-node ranking, and in every query
+    # subgraph that walks near it. Remove only sourceless stubs that ended the
+    # pass with zero edges; a stub that never resolved keeps its edges and
+    # stays, because "referenced but not in this corpus" is real information
+    # (e.g. an RM extension that isn't installed in this checkout).
+    referenced: set[str] = set()
+    for e in all_edges:
+        referenced.add(e.get("source"))
+        referenced.add(e.get("target"))
+    dead = [
+        n for n in all_nodes
+        if not n.get("source_file") and n.get("id") not in referenced
+        and str(n.get("label", "")).split(":", 1)[0] in
+        ("preside-object", "i18n", "webflow-event", "webflow-ref", "webflow-form")
+    ]
+    if dead:
+        dead_ids = {n["id"] for n in dead}
+        all_nodes[:] = [n for n in all_nodes if n.get("id") not in dead_ids]

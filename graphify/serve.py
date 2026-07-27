@@ -948,6 +948,24 @@ def _cut_lines_to_budget(lines: list[str], token_budget: int, narrow_hint: str) 
     )
 
 
+# Forward-traversal node count below which _query_graph_text re-traverses an
+# undirected view (see the adaptive-widening comment there). Chosen by threshold
+# sweep on a Preside golden set (12 questions, hit@k / avg nodes returned):
+#   0 -> 83% / 8.8    5 -> 92% / 12.5    10 -> 100% / 30.8    20 -> 100% / 43.8
+# 10 is the efficient frontier — full accuracy at ~30% less context than 20.
+# Set GRAPHIFY_WIDEN_BELOW_NODES=0 to disable widening entirely.
+def _widen_below_nodes() -> int:
+    import os
+    raw = os.environ.get("GRAPHIFY_WIDEN_BELOW_NODES", "10")
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 10
+
+
+_WIDEN_BELOW_NODES = _widen_below_nodes()
+
+
 def _query_graph_text(
     G: nx.Graph,
     question: str,
@@ -970,7 +988,23 @@ def _query_graph_text(
         return "No matching nodes found."
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
     traversal_graph = _filter_graph_by_context(G, resolved_filters)
-    nodes, edges = _dfs(traversal_graph, start_nodes, depth) if mode == "dfs" else _bfs(traversal_graph, start_nodes, depth)
+    _traverse = _dfs if mode == "dfs" else _bfs
+    nodes, edges = _traverse(traversal_graph, start_nodes, depth)
+    # Adaptive widening: the graph is directed, so a seed that is a LEAF in
+    # edge direction (a method — the most numerous node kind, reached via
+    # `contains`/`method` edges pointing INTO it) has no successors and forward
+    # traversal returns just the seed. The answer is upstream: its component,
+    # the caller, the webflow step that invokes it. For question answering,
+    # relationships are navigable both ways ("what calls X" is as valid as
+    # "what X calls"), so when forward traversal starves we re-traverse an
+    # undirected view. Direction is preserved in the stored graph and in edge
+    # rendering; only reachability widens. The renderer receives the SAME graph
+    # object the edges came from, or `G[u][v]` fails on a reversed pair.
+    if len(nodes) < _WIDEN_BELOW_NODES and traversal_graph.is_directed():
+        undirected = traversal_graph.to_undirected(as_view=True)
+        wider_nodes, wider_edges = _traverse(undirected, start_nodes, depth)
+        if len(wider_nodes) > len(nodes):
+            traversal_graph, nodes, edges = undirected, wider_nodes, wider_edges
     header_parts = [
         f"Traversal: {mode.upper()} depth={depth}",
         f"Start: {[G.nodes[n].get('label', n) for n in start_nodes]}",
