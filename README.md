@@ -333,6 +333,7 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 |------|-----------|
 | Code (36 tree-sitter grammars) | `.py .ts .mts .cts .js .jsx .tsx .mjs .go .rs .java .c .cpp .cc .cxx .h .hpp .cu .cuh .metal .rb .cs .kt .kts .scala .php .swift .lua .luau .toc .zig .ps1 .psm1 .psd1 .ex .exs .m .mm .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .slnx .csproj .fsproj .vbproj .xaml .razor .cshtml` (`.dm`/`.dme` requires `uv tool install graphifyy[dm]`; `.mts`/`.cts` reuse the TypeScript grammar, `.cc`/`.cxx` and CUDA `.cu`/`.cuh` and Metal `.metal` reuse the C++ grammar) |
 | Salesforce Apex | `.cls .trigger` (regex-based; classes, interfaces, enums, methods, triggers, SOQL/DML edges) |
+| CFML / ColdFusion | `.cfc .cfm .cfml` (script + tag mode via tree-sitter-cfml) — plus a ColdBox/Preside/ReadyMembership framework pass: `extends` mapping paths, project→extension→core `overrides`, WireBox `inject=`, `getPresideObject()` data-layer edges, handler→view conventions. See [CFML support](docs/cfml-readme.md) and the [how-to](docs/cfml-howto.md) |
 | Terraform / HCL | `.tf .tfvars .hcl` (requires `uv tool install graphifyy[terraform]`) |
 | MCP configs | `.mcp.json` `mcp.json` `mcp_servers.json` `claude_desktop_config.json` — extracts server nodes, package refs, env var requirements |
 | Package manifests | `apm.yml` `pyproject.toml` `go.mod` `pom.xml` — one canonical package node per package (by name) plus `depends_on` edges, so a package referenced from many manifests is a single hub |
@@ -788,6 +789,8 @@ graphify label ./my-project --backend=openai --model gpt-4o   # force a specific
 
 - [How it works](docs/how-it-works.md) — the extraction pipeline, community detection, confidence scoring, benchmarks
 - [ARCHITECTURE.md](ARCHITECTURE.md) — module breakdown, how to add a language
+- [CFML / ColdFusion support](docs/cfml-readme.md) — setup, the tree-sitter-cfml grammar, and the ColdBox/Preside framework pass
+- [CFML / Preside how-to](docs/cfml-howto.md) — build recipes, override-chain and blast-radius queries, multi-project graphs
 - [Optional integrations](docs/docker-mcp-sqlite.md) — Docker MCP Toolkit + SQLite
 - [The Memory Layer](https://safishamsi.gumroad.com/l/qetvlo) — the book on the ideas behind graphify, the architecture end to end
 
