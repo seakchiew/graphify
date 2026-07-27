@@ -791,6 +791,7 @@ graphify label ./my-project --backend=openai --model gpt-4o   # force a specific
 - [ARCHITECTURE.md](ARCHITECTURE.md) — module breakdown, how to add a language
 - [CFML / ColdFusion support](docs/cfml-readme.md) — setup, the tree-sitter-cfml grammar, and the ColdBox/Preside framework pass
 - [CFML / Preside how-to](docs/cfml-howto.md) — build recipes, override-chain and blast-radius queries, multi-project graphs
+- [CFML / Preside benchmarks](docs/cfml-benchmarks.md) — measured before/after across four production corpora
 - [Optional integrations](docs/docker-mcp-sqlite.md) — Docker MCP Toolkit + SQLite
 - [The Memory Layer](https://safishamsi.gumroad.com/l/qetvlo) — the book on the ideas behind graphify, the architecture end to end
 
