@@ -81,11 +81,14 @@ def run_benchmark(
     graph_path = graph_path or _default_graph_json()
     from graphify.security import check_graph_file_size_cap
     check_graph_file_size_cap(Path(graph_path))
-    data = json.loads(Path(graph_path).read_text(encoding="utf-8"))
-    try:
-        G = json_graph.node_link_graph(data, edges="links")
-    except TypeError:
-        G = json_graph.node_link_graph(data)
+    # Load through serve._load_graph — the same loader the query path and the
+    # MCP server use. The previous inline node_link_graph(edges="links") assumed
+    # a clustered graph and raised KeyError (not TypeError, so the fallback never
+    # caught it) on raw `extract --no-cluster` output, which has no "links" key.
+    # Sharing the loader also means the benchmark measures the graph exactly as
+    # queries see it, including the learning overlay.
+    from graphify.serve import _load_graph
+    G = _load_graph(str(graph_path))
 
     if corpus_words is None:
         # Rough estimate: each node label is ~3 words, plus source context

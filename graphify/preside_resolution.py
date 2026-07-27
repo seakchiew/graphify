@@ -99,12 +99,58 @@ def _mapping_path_suffixes(dotted: str) -> list[str]:
     return ["/".join(parts) + ".cfc"]
 
 
+_LAYER_RULES = (
+    # (path marker, layer) — first match wins, checked on the posix-lowered path.
+    ("/static/templates/", "static"),
+    ("/static/assets/", "static"),
+    ("/static/", "static"),
+    ("/preside/system/", "core"),
+    ("/application/extensions_app/", "app-extension"),
+    ("/application/extensions/", "extension"),
+    ("/application/", "app"),
+)
+
+
+def _layer_of(source_file: object) -> str | None:
+    """Which layer of a Preside project a file belongs to.
+
+    A Preside deployment is two applications in one repo: the Preside/RM
+    application under ``website/application`` and the Pixl8 Frontend Framework
+    v2 build under ``static/`` (its own Application.cfc, box.json, deploy.sh).
+    They belong in one graph — they are one project and reference each other —
+    but conflating them makes "where is this rendered" ambiguous, so every node
+    carries the layer it came from: static | app | app-extension | extension |
+    core. Query with it, filter reports by it, and keep frontend conventions
+    (templates/pages, templates/modules, widgets, LESS/grunt) reasoned about
+    separately from handler/service/preside-object conventions.
+    """
+    path = _norm(source_file).lower()
+    if not path:
+        return None
+    # Prepend "/" so a repo-relative path ("static/templates/x.cfm") matches the
+    # same anchored markers as an absolute one — without it every top-level
+    # directory silently failed to classify.
+    if not path.startswith("/"):
+        path = "/" + path
+    for marker, layer in _LAYER_RULES:
+        if marker in path:
+            return layer
+    return None
+
+
 def resolve_cfml_framework(
     per_file: list[dict],
     all_nodes: list[dict],
     all_edges: list[dict],
 ) -> None:
     node_by_id = {n.get("id"): n for n in all_nodes}
+
+    # Tag every sourced node with its layer before anything else, so downstream
+    # passes (and every consumer of graph.json) can tell frontend from app.
+    for _n in all_nodes:
+        _layer = _layer_of(_n.get("source_file"))
+        if _layer:
+            _n["layer"] = _layer
 
     # component nodes: targets of `contains` from a .cfc file node AND sources
     # of framework attrs. The extractor stores `cfml_extends` on the component.

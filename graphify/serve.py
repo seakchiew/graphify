@@ -184,6 +184,31 @@ def _query_terms(question: str) -> list[str]:
     return content or terms
 
 
+# Convention-framework resolution order, applied as a score multiplier keyed on
+# the `layer` node attribute (set by preside_resolution; absent on every other
+# corpus, where the .get() default of 1.0 makes this a no-op).
+#
+# In Preside/ColdBox the same class name legitimately exists at several layers:
+# a project file at application/services/Foo.cfc OVERRIDES the extension's
+# extensions/<ext>/services/Foo.cfc, which overrides core. The project file is
+# the one that actually runs and the one a developer must edit — but on a real
+# project the extension layer outnumbers it ~65:1 (33,515 vs 520 nodes on a
+# ReadyMembership site), so unweighted scoring reliably surfaced the file you
+# must NOT edit. Weighting by layer makes retrieval mirror the framework's own
+# resolution order. Multiplicative, not additive, so it re-ranks same-label
+# competitors without letting a weak layer-boosted match beat a strong one.
+_LAYER_WEIGHTS = {
+    "app": 1.60,            # project override — wins
+    "app-extension": 1.30,  # project-authored extension (extensions_app/)
+    # The frontend build is ORTHOGONAL to the override chain, not above it:
+    # it neither overrides nor is overridden by the app layer. Left at parity so
+    # generic frontend filenames (static/Application.cfc) cannot hijack an
+    # application query on an exact-match bonus, which is what a >1.0 weight did.
+    "static": 1.00,
+    "extension": 1.00,      # installed, read-only
+    "core": 0.85,           # Preside core — rarely the answer, never editable
+}
+
 _EXACT_MATCH_BONUS = 1000.0
 _PREFIX_MATCH_BONUS = 100.0
 _SUBSTRING_MATCH_BONUS = 1.0
@@ -508,6 +533,7 @@ def _score_query(
         if tiered:
             score += tiered * (matched / n_terms) ** 2
         if score > 0:
+            score *= _LAYER_WEIGHTS.get(data.get("layer"), 1.0)
             scored.append((score, nid))
     # Sort by score desc; break ties toward the shorter label so a concise exact
     # match beats a longer superset that happens to share the same score.
