@@ -29,8 +29,25 @@ website/application/extensions/*/modules/
 graphify-out/
 EOF
 
-# 2. build — local, free, no API key
-graphify extract . --code-only --no-gitignore
+# 2. re-include the installed extensions, which the project gitignores.
+#    THIS FILE MUST SIT BESIDE THE .gitignore IT OVERRIDES — graphify merges
+#    .gitignore and .graphifyignore per directory, .graphifyignore last, so
+#    last match wins WITHIN a directory. A rule at the repo root loses to a
+#    website/.gitignore rule. Find the blocking rule first:
+#        git check-ignore -v website/application/extensions/preside-ext-*/ | head -1
+#    ...then write the negation into that directory. Across six Preside
+#    projects the rule lived in three different places.
+cat > website/.graphifyignore <<'EOF'
+!/application/extensions/**
+EOF
+#    If the blocking rule names a bare directory (`application/extensions`
+#    rather than `application/extensions/*`) it excludes the DIRECTORY, so
+#    nothing inside can be re-included until the directory itself is:
+#        !/application/extensions/
+#        !/application/extensions/**
+
+# 3. build — local, free, no API key
+graphify extract . --code-only
 
 # 3. communities (optional but makes the report readable)
 graphify cluster-only . --no-viz --no-label
@@ -48,7 +65,18 @@ head -40 graphify-out/GRAPH_REPORT.md
 ```
 
 If the node count looks far too low, the scan almost certainly missed
-`application/extensions/` — that means `--no-gitignore` was omitted.
+`application/extensions/`. Check directly rather than guessing:
+
+```bash
+graphify query "preside-ext" | head -5     # should cite extension paths
+```
+
+`--no-gitignore` on the extract command achieves the same thing in one shot, and
+on one project the two agreed to within 1% (43,537 vs 43,231 nodes). Prefer the
+`.graphifyignore` negation anyway: it is persistent, so a later rebuild cannot
+forget it, and it keeps `.local/` and build output excluded. Omitting the flag
+on a rebuild is a silent ~40% scope loss with no warning — it cost four
+already-published measurements.
 
 ---
 
