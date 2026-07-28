@@ -1676,8 +1676,21 @@ def dispatch_command(cmd: str) -> None:
                     file=sys.stderr,
                 )
         elif no_label and not force_relabel:
+            # --no-label means "spend no tokens", not "give me nothing readable".
+            # On a Preside corpus the folder conventions name every community
+            # deterministically and for free, so a dev opening graph.html sees
+            # "exam_booking_page · page type" rather than "Community 3888".
+            from graphify.preside_labels import (
+                label_communities_by_preside_convention, looks_like_preside,
+            )
             labels = {cid: f"Community {cid}" for cid in communities}
-            placeholder_only = True
+            if looks_like_preside(G):
+                from graphify.cluster import label_communities_by_hub
+                labels.update(label_communities_by_hub(G, communities))
+                labels.update(label_communities_by_preside_convention(G, communities))
+                placeholder_only = False
+            else:
+                placeholder_only = True
         else:
             # No labels file yet (or `graphify label` forced a refresh). When run
             # standalone there is no orchestrating agent to do skill.md Step 5, so

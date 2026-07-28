@@ -32,8 +32,11 @@ ambiguous name produces no edge rather than a guess.
 """
 from __future__ import annotations
 
+import os
 import re
-from pathlib import PurePosixPath
+import subprocess
+from functools import lru_cache
+from pathlib import Path, PurePosixPath
 
 from graphify.extractors.base import _make_id
 
@@ -112,6 +115,86 @@ _LAYER_RULES = (
     ("/application/", "app"),
 )
 
+# `extensions_app/` is the modern home for project-authored modules, but older
+# projects put them in `extensions/` alongside the installed ones, so the
+# directory alone mis-tags them as OOB — the layer then says "vendor code" about
+# code the project owns and can edit.
+#
+# MEASURED EFFECT: none, so far. Retagging 4,058 nodes across four corpora (mis
+# 685, inteleos 2,707, msi 472, prii 194) moved neither hit@k nor the rank of a
+# single expected node on 26 eval questions, even where the promotion is 1.00 →
+# 1.60. This is kept as a correctness fix — the layer attribute is consumed by
+# reports, filters and anything else reading graph.json, and saying "vendor" about
+# first-party code is simply wrong — but it should not be described as a
+# retrieval improvement without evidence that does not currently exist. The eval
+# sets may not pose questions where a project module competes with OOB at the
+# margin; that is the experiment still to run.
+#
+# What separates them is **git**: installed extensions are gitignored and
+# restored by `box install`, project-authored ones are committed. Measured on
+# seven production projects, this classified every module correctly, including
+# the cases a `preside-ext-` naming rule gets wrong in both directions —
+# `common-editable-form-content` is unprefixed but box-installed (OOB), and a
+# project is free to commit a module under any name it likes.
+#
+# When git cannot answer — no repo, git missing, or a project that vendors every
+# extension so "tracked" stops discriminating — everything under `extensions/`
+# stays `extension`, which is the pre-existing behaviour. The signal only ever
+# promotes; it never guesses.
+_EXTENSIONS_MARKER = "/application/extensions/"
+
+
+@lru_cache(maxsize=8)
+def _tracked_extension_modules(root: str) -> frozenset | None:
+    """Names of modules under application/extensions/ that are committed.
+
+    ``None`` when git cannot answer usefully — no repo, git missing, or a
+    project that vendors *every* extension.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", root, "ls-files", "--", "*application/extensions/*"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+
+    on_disk = set()
+    for base in (Path(root) / "website" / "application" / "extensions",
+                 Path(root) / "application" / "extensions"):
+        if base.is_dir():
+            on_disk |= {d.name.lower() for d in base.iterdir() if d.is_dir()}
+    if not on_disk:
+        return None
+
+    tracked: set[str] = set()
+    for line in proc.stdout.splitlines():
+        parts = line.split("/")
+        try:
+            i = parts.index("extensions")
+        except ValueError:
+            continue
+        # Intersecting with the directories actually present drops files
+        # committed straight into extensions/ — several projects track a
+        # README.md and an extensions.json there, which would otherwise read as
+        # module names.
+        if i + 1 < len(parts) and parts[i - 1] == "application":
+            name = parts[i + 1].lower()
+            if name in on_disk:
+                tracked.add(name)
+    if not tracked or tracked >= on_disk:
+        return None  # nothing committed, or everything vendored: no information
+    return frozenset(tracked)
+
+
+def _extension_module_layer(path: str, root: str) -> str:
+    """`extension` or `app-extension` for a file under application/extensions/."""
+    module = path.split(_EXTENSIONS_MARKER, 1)[1].split("/", 1)[0]
+    tracked = _tracked_extension_modules(root) or frozenset()
+    return "app-extension" if module in tracked else "extension"
+
 
 def _layer_of(source_file: object) -> str | None:
     """Which layer of a Preside project a file belongs to.
@@ -136,6 +219,8 @@ def _layer_of(source_file: object) -> str | None:
         path = "/" + path
     for marker, layer in _LAYER_RULES:
         if marker in path:
+            if marker == _EXTENSIONS_MARKER:
+                return _extension_module_layer(path, os.getcwd())
             return layer
     return None
 
