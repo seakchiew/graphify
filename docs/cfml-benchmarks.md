@@ -10,8 +10,14 @@ each repo's `.docs/graph-benchmark.md`; this page is the cross-corpus result.
 > edited away. The seventh corpus (prii) confirmed both corrections rather than
 > adding new ones.
 
-A rendered, self-contained `graphify-out/graph.html` now exists for all seven —
+A rendered, self-contained `graphify-out/graph.html` now exists for all of them —
 see "Viewing a graph" at the end.
+
+**Five further projects have since been scope-validated but not token-benchmarked**
+(nasc, staffcc, scc, iom3, istructe). They are listed at the end under
+"Scope-validated corpora"; the token and hit@k tables below cover the seven
+measured ones only, and no figure in them has been extrapolated to the other
+five.
 
 ## Method
 
@@ -268,6 +274,56 @@ both call sites.
 Rendered sizes: cbi 1.3MB (1,184 community nodes) · servicedesk 1.4MB (982) ·
 mis 2.9MB (3,568) · msi 3.0MB (3,991) · prii 3.1MB (3,888) · a-n 3.4MB (4,335) ·
 inteleos 3.6MB (4,853).
+
+## Scope-validated corpora
+
+Five projects onboarded cold with the `pixl8-graph-builder` skill, to test the
+*procedure* rather than re-measure tokens. All five passed the eight-check scope
+gate. Full write-up:
+`~/Projects/skills/docs/ai-engineering/skill-validation-round.md`.
+
+| Corpus | Nodes | Edges | Build | Project-owned | Extensions |
+|---|---:|---:|---:|---:|---:|
+| nasc | 45,175 | 85,326 | 78s | 2.1% | 78 |
+| staffcc | 41,706 | 80,996 | 81s | 2.2% | 74 |
+| scc | 34,796 | 67,733 | 69s | 1.8% | 68 |
+| istructe | 22,839 | 44,212 | 43s | 5.1% | 40 |
+| iom3 | 3,074 | 3,752 | 4s | **76.4%** | 5 |
+
+iom3 is the extreme of the whole set — a Preside application with almost no
+platform above it. Project ownership across all twelve now spans **1.4% to
+76.4%**, and the build is correct across the entire range.
+
+No BEFORE baselines were run for these five, deliberately: at ~430k tokens each
+they would have cost ~2M tokens to confirm a ratio that had already converged.
+
+### What the round found
+
+Four defects, all in the tooling rather than the graphs:
+
+- Two that made the skill unrunnable in Claude Code — `python3` resolving to a
+  shell function that swallows the script argument, and `eval_retrieval.py`
+  needing graphify's own interpreter. Both fixed by deriving the interpreter
+  from the `graphify` shim.
+- A hand-written negation on nasc that produced **1,188 nodes instead of
+  45,175** — the bare-directory trap, written wrongly by someone with the
+  document describing it open. Step 2 of the skill is now a script.
+- Two bugs in that script, caught only because it was tested against all twelve
+  projects rather than the five: it overwrote a `.graphifyignore` it should have
+  appended to, and mis-computed the path prefix when the blocking rule sat at
+  the repo root.
+
+**The rule shapes, across all twelve** — five shapes in four locations, which is
+why the negation cannot be written from a table by hand:
+
+| Shape | Rule | Location | Projects |
+|---|---|---|---|
+| bare directory | `application/extensions` | `website/` | nasc, a-n |
+| children glob | `application/extensions/*` | `website/` | inteleos, cbi, servicedesk |
+| children glob, root | `website/application/extensions/*` | repo root | mis |
+| prefix-scoped | `application/extensions/preside-ext-*` | `website/` | staffcc, scc, prii |
+| inside extensions | `preside*` / `preside-ext*` | `…/extensions/` | istructe, msi |
+| none | — | — | iom3 |
 
 ## Honest limits
 
