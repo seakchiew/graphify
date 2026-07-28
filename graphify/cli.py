@@ -1768,7 +1768,15 @@ def dispatch_command(cmd: str) -> None:
             try:
                 # Over-cap fallback (#1019): force the community-aggregation
                 # path so an oversized graph still renders a usable graph.html.
-                _node_limit = 5000 if _over_cap else None
+                #
+                # `_over_cap` tracks graph.json BYTE size, but the thing that
+                # makes a force-directed view unusable is NODE count, and the
+                # two diverge: a code-only graph of a large codebase is
+                # node-heavy and byte-light, so it took the raise-ValueError
+                # branch and produced no graph.html at all. Passing the
+                # effective limit always means "aggregate rather than refuse".
+                from graphify.exporters.html import _viz_node_limit
+                _node_limit = 5000 if _over_cap else _viz_node_limit()
                 to_html(G, communities, str(html_target), community_labels=labels or None,
                         node_limit=_node_limit)
                 stages.mark("export"); stages.total()
@@ -2304,7 +2312,11 @@ def dispatch_command(cmd: str) -> None:
             else:
                 # Over-cap fallback (#1019): force the community-aggregation
                 # path so the oversized graph still renders a usable artifact.
-                _effective_node_limit = 5000 if _over_cap else node_limit
+                # Node count, not JSON byte size, is what the viz cannot take —
+                # see the matching note in the cluster-only branch.
+                from graphify.exporters.html import _viz_node_limit
+                _effective_node_limit = (5000 if _over_cap
+                                         else (node_limit or _viz_node_limit()))
                 _to_html(G, communities, str(out_dir / "graph.html"),
                          community_labels=labels or None, node_limit=_effective_node_limit)
                 if G.number_of_nodes() <= _effective_node_limit:
