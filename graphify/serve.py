@@ -1067,7 +1067,15 @@ def _query_graph_text(
         and len(nodes) < _WIDEN_BELOW_NODES
     ):
         unfiltered_nodes, unfiltered_edges = _traverse(G, start_nodes, depth)
-        if len(unfiltered_nodes) > len(nodes):
+        # Retract only on evidence of STARVATION, not on any gain at all. A
+        # correct filter still trims a node or two, and on a small graph every
+        # result is below the widen threshold — an earlier version fired on
+        # 2 -> 3 nodes and silently discarded filters that were doing their job.
+        # Require the unfiltered traversal to at least double the result AND
+        # add real material, which a genuinely wrong filter always does: it
+        # deletes the edges the answer sits behind, collapsing 40 nodes to 2.
+        gain = len(unfiltered_nodes) - len(nodes)
+        if len(unfiltered_nodes) >= 2 * max(len(nodes), 1) and gain >= 3:
             traversal_graph = G
             nodes, edges = unfiltered_nodes, unfiltered_edges
             resolved_filters, filter_source = [], None

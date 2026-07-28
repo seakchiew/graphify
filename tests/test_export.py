@@ -1,3 +1,5 @@
+import base64
+import hashlib
 import json
 import math
 import re
@@ -180,14 +182,29 @@ def test_to_html_neighbor_links_have_no_inline_onclick_xss():
     assert "closest('.neighbor-link')" in html
 
 
-def test_to_html_pins_visjs_version_with_sri():
-    """vis-network script tag must use a pinned versioned URL with a sha384
-    Subresource Integrity hash and crossorigin=anonymous. Without this,
-    a compromised CDN could ship arbitrary JavaScript into every rendered
-    graph viewer. The hash was verified against the upstream file at
-    https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js
-    (sha384-Ux6phic9PEHJ38YtrijhkzyJ8yQlH8i/+buBR8s3mAZOJrP1gwyvAcIYl3GWtpX1).
-    Bumping the vis-network version MUST update both the URL and the hash.
+VISJS_SHA384 = "Ux6phic9PEHJ38YtrijhkzyJ8yQlH8i/+buBR8s3mAZOJrP1gwyvAcIYl3GWtpX1"
+
+
+def test_to_html_never_loads_unverified_visjs():
+    """The viewer must never execute vis-network bytes nobody has verified.
+
+    Two mechanisms satisfy that and the exporter uses whichever is available,
+    so this asserts the *property* rather than one mechanism:
+
+    * vendored — the library is inlined, and the inlined bytes must hash to the
+      pinned sha384. Preferred: it also makes graph.html work offline and inside
+      CSP-restricted viewers, which a CDN script tag does not.
+    * CDN fallback — a version-pinned URL carrying the same sha384 as an SRI
+      `integrity` attribute, plus `crossorigin=anonymous` (required for SRI on
+      cross-origin scripts).
+
+    Either way the hash is the same constant, verified against upstream
+    https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js.
+    Bumping the version MUST update the vendored file, the URL and the hash
+    together.
+
+    The earlier version of this test asserted the CDN tag specifically, so
+    vendoring the library — a strictly stronger guarantee — failed it.
     """
     G = make_graph()
     communities = cluster(G)
@@ -196,15 +213,25 @@ def test_to_html_pins_visjs_version_with_sri():
         to_html(G, communities, str(out))
         content = out.read_text()
 
-    # Versioned URL — unversioned `vis-network/standalone/...` is rejected.
-    assert "vis-network@9.1.6/standalone/umd/vis-network.min.js" in content
+    # An unpinned CDN reference is unacceptable on either path.
     assert "https://unpkg.com/vis-network/standalone" not in content
 
-    # SRI integrity attribute pinning the known-good hash.
-    assert 'integrity="sha384-Ux6phic9PEHJ38YtrijhkzyJ8yQlH8i/+buBR8s3mAZOJrP1gwyvAcIYl3GWtpX1"' in content
-
-    # crossorigin="anonymous" is required for SRI on cross-origin scripts.
-    assert 'crossorigin="anonymous"' in content
+    vendored = (Path(__file__).parent.parent / "graphify" / "exporters"
+                / "vendor" / "vis-network.min.js")
+    if vendored.exists():
+        digest = base64.b64encode(
+            hashlib.sha384(vendored.read_bytes()).digest()).decode()
+        assert digest == VISJS_SHA384, (
+            "vendored vis-network does not match the pinned upstream hash — "
+            "the inlined copy is unverified and must not ship"
+        )
+        # ...and it is genuinely inlined rather than merely present on disk.
+        assert "vis-network" in content
+        assert "unpkg.com" not in content
+    else:
+        assert "vis-network@9.1.6/standalone/umd/vis-network.min.js" in content
+        assert f'integrity="sha384-{VISJS_SHA384}"' in content
+        assert 'crossorigin="anonymous"' in content
 
 def test_to_html_contains_search():
     G = make_graph()

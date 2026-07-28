@@ -2,16 +2,6 @@
 
 Load this when the user asks a question against an existing graph, or runs `/graphify path` or `/graphify explain`. The core's query stub points here for the full traversal flow. These flows use the `graphify query` CLI when it is available and fall back to an inline NetworkX traversal otherwise.
 
-**Optionality gate**: the graph is an optional enhancement. If the `graphify` binary is not on PATH or `graphify-out/graph.json` does not exist in the project, exit this flow and answer through the normal source-first workflow (grep/read) — silently, with no error and no suggestion to install anything. (When the user *explicitly invoked* `/graphify`, the missing-graph error below still applies.)
-
-**The loop this file implements** (gen-verify — a graph answer is a draft until verified):
-
-```
-EXPAND ──► TRAVERSE ──► DRAFT ──► VERIFY vs source ──► record outcome ──► answer
-   ▲                                  │
-   └──── ONE retry, changed strategy ◄┘        (round cap 2, then "inconclusive")
-```
-
 Two traversal modes - choose based on the question:
 
 | Mode | Flag | Best for |
@@ -36,16 +26,12 @@ graphify's `query` CLI matches nodes via case-folded substring + IDF — there i
 
 Fix this **without inventing tokens** by expanding the query against the actual graph vocabulary first:
 
-1. Ensure the cached vocabulary is current — regenerate it **only** when it is missing or older than the graph (per-query regeneration is waste; the vocab only changes when the graph does):
+1. Extract the token vocabulary from node labels:
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import json, re
 from pathlib import Path
-vocab_p, graph_p = Path('graphify-out/.vocab.txt'), Path('graphify-out/graph.json')
-if vocab_p.exists() and vocab_p.stat().st_mtime >= graph_p.stat().st_mtime:
-    print(f'vocab: cached ({sum(1 for _ in vocab_p.open())} tokens)')
-    raise SystemExit(0)
-data = json.loads(graph_p.read_text(encoding='utf-8'))
+data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
 vocab = set()
 for n in data['nodes']:
     for c in re.findall(r'[^\W\d_]+', n.get('label','') or '', re.UNICODE):
@@ -54,20 +40,16 @@ for n in data['nodes']:
             t = p.lower()
             if 3 <= len(t) <= 30:
                 vocab.add(t)
-vocab_p.write_text('\n'.join(sorted(vocab)), encoding='utf-8')
-print(f'vocab: {len(vocab)} tokens (rebuilt)')
+Path('graphify-out/.vocab.txt').write_text('\n'.join(sorted(vocab)), encoding='utf-8')
+print(f'vocab: {len(vocab)} tokens')
 "
 ```
 
-2. Probe the vocabulary with Grep against candidate stems from the question — do NOT Read the whole file into context (it can be tens of thousands of tokens). For each concept in the question, derive 2-4 candidate stems (synonyms, morphology variants, domain terms) and check which exist:
-```bash
-grep -ix -e "stem1" -e "stem2" -e "stem3" graphify-out/.vocab.txt
-```
-Repeat with `grep -i -e "stem"` (substring) for stems that miss exactly. From the confirmed tokens, select **up to 12** that semantically match the query intent. Hard constraints:
-   - You MUST pick only tokens confirmed present in the vocabulary. Do NOT invent tokens.
+2. Read `graphify-out/.vocab.txt`. Then for the user's question, select **up to 12 tokens from this exact list** that semantically match the query intent. Hard constraints:
+   - You MUST pick only tokens present in the vocabulary file. Do NOT invent tokens.
    - If a query concept has no plausible token in the vocab, skip it — do not substitute a near-synonym from training memory.
    - If **no** vocab tokens match the query at all, output an empty list and tell the user the corpus has no relevant vocabulary for this question. Do not fabricate a search.
-   - Translate cross-language: Russian "аутентификация" → probe for `auth`, `credential`, `token`, `security` IFF present in vocab.
+   - Translate cross-language: Russian "аутентификация" → look for `auth`, `credential`, `token`, `security` IFF present in vocab.
    - Morphology: "handlers" maps to `handler` IFF present; "todos" maps to `todo` IFF present.
 
 3. Print the selection explicitly to the user before running the query, so the expansion is auditable:
@@ -181,36 +163,21 @@ print(output)
 "
 ```
 
-Replace `QUESTION` with the **expanded** query string, `MODE` with `bfs` or `dfs`, and `BUDGET` with the token budget (default `2000`, or whatever `--budget N` specifies). Then **draft** an answer from the subgraph output, using only what the graph contains.
+Replace `QUESTION` with the **expanded** query string, `MODE` with `bfs` or `dfs`, and `BUDGET` with the token budget (default `2000`, or whatever `--budget N` specifies). Then answer based on the subgraph output above, using only what the graph contains.
 
-### Step 2 — Verify the draft against source (REQUIRED before recording an outcome)
-
-A graph answer is a draft until it survives a cheap oracle — the graph can be stale or the traversal can surface the wrong same-named symbol:
-
-1. Take the ≤3 nodes whose facts your draft actually relies on. For each, Read the cited `source_file` at its `source_location` (a ranged read of ~20 lines — one read per node).
-2. Compare what the code says with what your draft claims. Then:
-   - **Supported** → the answer stands; record `--outcome useful` in Step 3.
-   - **Contradicted** → fix the answer to match the code and record `--outcome corrected --correction "<what the code actually does>"`.
-   - **Unresolvable** (node has no source_file, the file moved, or the lines are ambiguous) → mark that claim UNVERIFIED in your answer and save with **no** `--outcome`. Never record `useful` for an answer you did not check — two unchecked self-marks mint a false "preferred source" that misleads every later session.
-3. Skip the oracle only for trivial "where is X" lookups — there the returned `source_file` path IS the verification.
-
-**Retry rule (round cap 2).** If traversal returned nothing relevant, or the oracle refuted the draft entirely: retry ONCE with a *changed* strategy — different vocab tokens, `--dfs` instead of BFS, a `--context` filter, or a raised `--budget` when the output said `[!] TRUNCATED`. If the second attempt also fails: tell the user **"inconclusive — the graph doesn't cover this; answering from source instead"**, record `--outcome dead_end`, and continue with the normal grep/read workflow. Never run a third blind query. Report what was tried and what each attempt returned.
-
-### Step 3 — Record the outcome
-
-Save the verified answer back so future sessions learn from this one. Include the expanded tokens inside the `--answer` text (e.g. `"Expanded from original query via vocab: [tokens]. Then traversed..."`) so the next `--update` extracts the expansion history as a graph node:
+After writing the answer, save it back into the graph so it improves future queries. Include the expanded tokens inside the `--answer` text (e.g. `"Expanded from original query via vocab: [tokens]. Then traversed..."`) so the next `--update` extracts the expansion history as a graph node:
 
 ```bash
-graphify save-result --question "ORIGINAL_QUESTION" --answer "ANSWER" --type query --nodes NODE1 NODE2 --outcome OUTCOME
+$(cat graphify-out/.graphify_python) -m graphify save-result --question "ORIGINAL_QUESTION" --answer "ANSWER" --type query --nodes NODE1 NODE2
 ```
 
-Replace `ORIGINAL_QUESTION` with the user's verbatim question, `ANSWER` with your full answer text (containing the expanded-token trace), `NODE1 NODE2` with the node labels you cited, and `OUTCOME` with the Step 2 verdict (omit `--outcome` only for the UNVERIFIED case):
+Replace `ORIGINAL_QUESTION` with the user's verbatim question, `ANSWER` with your full answer text (containing the expanded-token trace), `NODE1 NODE2` with the list of node labels you cited. This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.
 
-- `useful` — the oracle confirmed the cited nodes answered the question (they become *preferred sources*).
+**Work memory (self-improving loop).** Add an `--outcome` so future sessions learn from this one — append `--outcome useful|dead_end|corrected` to the `save-result` command (and `--correction "the right answer"` when correcting):
+
+- `useful` — the cited nodes answered the question well (they become *preferred sources*).
 - `dead_end` — the question/path led nowhere; don't re-derive it next time.
-- `corrected` — the draft was wrong against source; `--correction` records what was right.
-
-Outcomes are **observed, never believed** — they must come from the Step 2 check, not from confidence in your own draft.
+- `corrected` — the saved answer was wrong; `--correction` records what was right.
 
 At the **start** of graph work, refresh and read the lessons: run `graphify reflect --if-stale` (cheap, deterministic, no LLM; `--if-stale` makes it a no-op when `LESSONS.md` is already newer than every input, e.g. when the git hook just refreshed it), then read `graphify-out/reflections/LESSONS.md`. It lists **preferred sources** (start there), **known dead ends** (skip them), and prior **corrections**. Running `reflect` yourself keeps the lessons current even without the git hook installed; if the post-commit hook *is* installed, `--if-stale` means your session-start run costs almost nothing.
 
@@ -276,10 +243,10 @@ except nx.NodeNotFound as e:
 
 Replace `NODE_A` and `NODE_B` with the actual concept names from the user. Then explain the path in plain language - what each hop means, why it's significant.
 
-Before saving, apply the Step 2 oracle from the query flow: Read the cited `source_location` of the path's key hops and confirm the relations hold; then save with the observed `--outcome`:
+After writing the explanation, save it back:
 
 ```bash
-graphify save-result --question "Path from NODE_A to NODE_B" --answer "ANSWER" --type path_query --nodes NODE_A NODE_B --outcome OUTCOME
+$(cat graphify-out/.graphify_python) -m graphify save-result --question "Path from NODE_A to NODE_B" --answer "ANSWER" --type path_query --nodes NODE_A NODE_B
 ```
 
 ---
@@ -337,8 +304,8 @@ for neighbor in G.neighbors(nid):
 
 Replace `NODE_NAME` with the concept the user asked about. Then write a 3-5 sentence explanation of what this node is, what it connects to, and why those connections are significant. Use the source locations as citations.
 
-Before saving, apply the Step 2 oracle from the query flow: Read the node's `source_location` (one ranged read) and confirm the explanation matches the code; then save with the observed `--outcome`:
+After writing the explanation, save it back:
 
 ```bash
-graphify save-result --question "Explain NODE_NAME" --answer "ANSWER" --type explain --nodes NODE_NAME --outcome OUTCOME
+$(cat graphify-out/.graphify_python) -m graphify save-result --question "Explain NODE_NAME" --answer "ANSWER" --type explain --nodes NODE_NAME
 ```
