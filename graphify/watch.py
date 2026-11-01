@@ -963,6 +963,9 @@ def _rebuild_code(
         # hook rebuild does not silently re-include deliberately excluded paths
         # (#1886).
         _persisted_excludes = _read_build_excludes(out)
+        # #4923: honour the scope the graph was built with. Without this a
+        # `--code-only` graph silently grows doc nodes on the next hook rebuild.
+        _code_only = _read_build_code_only(out)
         detected = detect(
             watch_path, follow_symlinks=follow_symlinks,
             extra_excludes=_persisted_excludes or None,
@@ -971,8 +974,11 @@ def _rebuild_code(
         code_files = [Path(f) for f in detected['files']['code']]
 
         # Include document files that have AST extractors (e.g. .md, .mdx, .qmd)
+        # A `--code-only` graph (#4923) opted out of documents entirely, so the
+        # quick-scan is skipped; doc nodes already in the graph are preserved
+        # untouched (they are not in code_files, so reconcile keeps them).
         ast_doc_files: list[Path] = []
-        for doc_file in detected['files'].get('document', []):
+        for doc_file in ([] if _code_only else detected['files'].get('document', [])):
             p = Path(doc_file)
             if _get_extractor(p) is not None:
                 code_files.append(p)
