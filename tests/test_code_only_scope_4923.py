@@ -177,3 +177,30 @@ def test_doc_nodes_already_in_graph_survive_turning_scope_on(tmp_path):
     assert _gfy(tmp_path, "extract", str(tmp_path), "--code-only").returncode == 0
     assert _rebuild_code(tmp_path, acquire_lock=False)          # now scoped
     assert {n["id"] for n in _docs(tmp_path)} == before         # preserved, not evicted
+
+
+def test_aborted_flagless_extract_keeps_scope(tmp_path):
+    _corpus(tmp_path)
+    assert _gfy(tmp_path, "extract", str(tmp_path), "--code-only").returncode == 0
+    env = {k: "" for k in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY",
+                           "OPENAI_API_KEY", "MOONSHOT_API_KEY", "DEEPSEEK_API_KEY")}
+    r = _gfy(tmp_path, "extract", str(tmp_path), env=env)
+    assert r.returncode == 1 and "no LLM API key" in r.stderr
+    assert _cfg(tmp_path)["code_only"] is True
+
+
+def test_flagless_extract_that_ingests_docs_resets_scope(tmp_path):
+    _corpus(tmp_path)
+    assert _gfy(tmp_path, "extract", str(tmp_path), "--code-only").returncode == 0
+    assert _cfg(tmp_path)["code_only"] is True
+    # dead local ollama: passes the key gate (localhost), then fails to connect
+    _gfy(tmp_path, "extract", str(tmp_path), "--backend", "ollama",
+         env={"OLLAMA_BASE_URL": "http://127.0.0.1:1"})
+    assert _cfg(tmp_path)["code_only"] is False
+
+
+def test_flagless_extract_on_doc_free_corpus_keeps_scope(tmp_path):
+    (tmp_path / "a.py").write_text("def foo():\n    return 1\n")
+    assert _gfy(tmp_path, "extract", str(tmp_path), "--code-only").returncode == 0
+    assert _gfy(tmp_path, "extract", str(tmp_path)).returncode == 0
+    assert _cfg(tmp_path)["code_only"] is True
