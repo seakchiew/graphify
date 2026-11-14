@@ -54,7 +54,15 @@ def _build(root: Path, *, cluster: bool) -> dict:
     args = [sys.executable, "-m", "graphify", "update", str(root), "--force"]
     if not cluster:
         args.append("--no-cluster")
-    env = dict(os.environ, PYTHONHASHSEED="0", PYTHONIOENCODING="utf-8")
+    # The module-scoped fixture runs before conftest's per-test throwaway HOME,
+    # so this subprocess sees the real one: keep it from refreshing the
+    # developer's installed skills.
+    env = dict(
+        os.environ,
+        PYTHONHASHSEED="0",
+        PYTHONIOENCODING="utf-8",
+        GRAPHIFY_NO_AUTO_REFRESH="1",
+    )
     result = subprocess.run(args, cwd=root, env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr[-2000:]
     text = (root / "graphify-out" / "graph.json").read_text(encoding="utf-8")
