@@ -19,9 +19,12 @@ from graphify.extractors.preside_assets import (
     extract_properties,
     extract_webflow,
 )
+from graphify.extractors.cobol import extract_cobol
+from graphify.extractors.commonlisp import extract_commonlisp
 from graphify.extractors.dart import extract_dart
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm
 from graphify.extractors.elixir import extract_elixir
+from graphify.extractors.erlang import extract_erlang
 from graphify.extractors.fortran import extract_fortran
 from graphify.extractors.go import extract_go
 from graphify.extractors.json_config import extract_json
@@ -31,12 +34,15 @@ from graphify.extractors.objc import extract_objc
 from graphify.extractors.pascal import extract_pascal
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest
+from graphify.extractors.r import extract_r
 from graphify.extractors.razor import extract_razor
 from graphify.extractors.rust import extract_rust
 from graphify.extractors.sln import extract_sln
+from graphify.extractors.solidity import extract_solidity
 from graphify.extractors.sql import extract_sql
 from graphify.extractors.terraform import extract_terraform
 from graphify.extractors.verilog import extract_verilog
+from graphify.extractors.vbnet import extract_vbnet
 from graphify.extractors.zig import extract_zig
 
 LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
@@ -44,6 +50,8 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "bash": extract_bash,
     "blade": extract_blade,
     "cfml": extract_cfml,
+    "cobol": extract_cobol,
+    "commonlisp": extract_commonlisp,
     "dart": extract_dart,
     "preside_form": extract_preside_form,
     "preside_i18n": extract_properties,
@@ -54,6 +62,7 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "dmi": extract_dmi,
     "dmm": extract_dmm,
     "elixir": extract_elixir,
+    "erlang": extract_erlang,
     "fortran": extract_fortran,
     "go": extract_go,
     "json": extract_json,
@@ -64,11 +73,14 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "pascal": extract_pascal,
     "powershell": extract_powershell,
     "powershell_manifest": extract_powershell_manifest,
+    "r": extract_r,
     "razor": extract_razor,
     "rust": extract_rust,
     "sln": extract_sln,
+    "solidity": extract_solidity,
     "sql": extract_sql,
     "terraform": extract_terraform,
     "verilog": extract_verilog,
+    "vbnet": extract_vbnet,
     "zig": extract_zig,
 }

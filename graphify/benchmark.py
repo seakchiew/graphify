@@ -1,11 +1,9 @@
 """Token-reduction benchmark - measures how much context graphify saves vs naive full-corpus approach."""
 from __future__ import annotations
-import json
 import sys
-from pathlib import Path
 import networkx as nx
-from networkx.readwrite import json_graph
 
+from graphify.serve import _query_graph_text, _read_graph
 from graphify.paths import default_graph_json as _default_graph_json
 
 
@@ -37,22 +35,14 @@ def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // _CHARS_PER_TOKEN)
 
 
-def _query_subgraph_tokens(G: nx.Graph, question: str, depth: int = 3) -> int:
-    """Estimated tokens of the PRODUCTION query output for this question.
-
-    Routes through serve._query_graph_text — the same scoring (_score_query:
-    IDF + exact/prefix/substring tiers), seed selection, context filters and
-    budget rendering the MCP server and CLI use — so the benchmark measures
-    the path users actually pay for, not a naive substring approximation.
-    An effectively-unbounded token_budget keeps the measurement about subgraph
-    size rather than the render cap.
-    """
-    from graphify.serve import _query_graph_text
-
-    result = _query_graph_text(G, question, depth=depth, token_budget=1_000_000)
-    if result.startswith("No matching nodes"):
+def _query_subgraph_tokens(G: nx.Graph, question: str, depth: int = 3, token_budget: int = 2000) -> int:
+    """Estimated tokens of the answer query_graph returns for ``question`` (BFS,
+    the MCP tool's defaults), 0 when nothing in the graph matches it. The
+    answer is the real one an agent receives: seeds, budget cut and notices."""
+    text = _query_graph_text(G, question, mode="bfs", depth=depth, token_budget=token_budget)
+    if text == "No matching nodes found.":
         return 0
-    return _estimate_tokens(result)
+    return _estimate_tokens(text)
 
 
 _SAMPLE_QUESTIONS = [
@@ -79,16 +69,10 @@ def run_benchmark(
     Returns dict with: corpus_tokens, avg_query_tokens, reduction_ratio, per_question
     """
     graph_path = graph_path or _default_graph_json()
-    from graphify.security import check_graph_file_size_cap
-    check_graph_file_size_cap(Path(graph_path))
-    # Load through serve._load_graph — the same loader the query path and the
-    # MCP server use. The previous inline node_link_graph(edges="links") assumed
-    # a clustered graph and raised KeyError (not TypeError, so the fallback never
-    # caught it) on raw `extract --no-cluster` output, which has no "links" key.
-    # Sharing the loader also means the benchmark measures the graph exactly as
-    # queries see it, including the learning overlay.
-    from graphify.serve import _load_graph
-    G = _load_graph(str(graph_path))
+    # Loaded exactly as the MCP server loads it (size cap, links/edges
+    # normalization for a raw --no-cluster graph, #2212), so every answer
+    # measured is the one query_graph returns.
+    G = _read_graph(str(graph_path))
 
     if corpus_words is None:
         # Rough estimate: each node label is ~3 words, plus source context

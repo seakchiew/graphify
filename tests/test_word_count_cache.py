@@ -4,9 +4,23 @@ the corpus.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from graphify import cache
+
+
+def _settle(path: Path) -> None:
+    """Backdate mtime past the racily-clean window so the stat fastpath is
+    allowed to serve this file.
+
+    A just-written file is deliberately never trusted: its mtime tick may still
+    be open, so a same-length rewrite could hide behind an identical
+    (size, mtime_ns). See cache._stat_sig_fresh. Any test asserting a warm stat
+    hit therefore has to settle the file first.
+    """
+    old = path.stat().st_mtime_ns - 10 * 1_000_000_000
+    os.utime(path, ns=(old, old))
 
 
 def test_word_count_cached_until_file_changes(tmp_path, monkeypatch):
@@ -16,6 +30,7 @@ def test_word_count_cached_until_file_changes(tmp_path, monkeypatch):
 
     f = tmp_path / "doc.txt"
     f.write_text("one two three four five")
+    _settle(f)
 
     calls = {"n": 0}
     def compute(p: Path) -> int:
@@ -69,8 +84,11 @@ def test_file_hash_is_order_independent_across_roots(tmp_path, monkeypatch):
 
     content = f.read_bytes()
     exp_rel = hashlib.sha256(content + b"\x00" + b"doc.txt").hexdigest()
+    # The abs-path salt is case-preserving: it enters the digest as written, not
+    # lowercased, so README.md and readme.md no longer collide on a case-sensitive
+    # filesystem (#4925, #4937).
     exp_abs = hashlib.sha256(
-        content + b"\x00" + str(cache._normalize_path(f).resolve()).replace("\\", "/").lower().encode()
+        content + b"\x00" + str(cache._normalize_path(f).resolve()).replace("\\", "/").encode()
     ).hexdigest()
 
     # rel-first order

@@ -18,7 +18,10 @@ import hashlib
 import json
 import os
 import shutil
+import warnings
 from pathlib import Path
+
+import pytest
 
 from graphify import cache
 
@@ -58,6 +61,19 @@ def _fail_compute(p: Path) -> int:
     raise AssertionError(f"word-count compute invoked for {p}; expected a warm stat hit")
 
 
+def _settle(path: Path) -> None:
+    """Backdate mtime past the racily-clean window so the stat fastpath is
+    allowed to serve this file.
+
+    A just-written file is deliberately never trusted: its mtime tick may still
+    be open, so a same-length rewrite could hide behind an identical
+    (size, mtime_ns). See cache._stat_sig_fresh. Any test asserting a warm stat
+    hit therefore has to settle the file first.
+    """
+    old = path.stat().st_mtime_ns - 10 * 1_000_000_000
+    os.utime(path, ns=(old, old))
+
+
 def test_cache_hits_survive_corpus_move(tmp_path, monkeypatch):
     """Run A under tmp/a, copy the corpus (with graphify-out/) to tmp/b: run B
     must be 100% warm — zero content reads, zero word-count computes, digests
@@ -69,6 +85,8 @@ def test_cache_hits_survive_corpus_move(tmp_path, monkeypatch):
     sub = a / "sub"
     sub.mkdir()
     (sub / "f2.md").write_text("hello world one two\n")
+    _settle(a / "f1.py")
+    _settle(sub / "f2.md")
 
     digests_a = {
         "f1.py": cache.file_hash(a / "f1.py", a),
@@ -122,14 +140,20 @@ def test_deleted_entries_are_pruned_on_flush(tmp_path):
 
 
 def test_legacy_absolute_index_migrates_gracefully(tmp_path, monkeypatch):
-    """A pre-#2199 index keyed by absolute paths still HITS on the unmoved
-    root, and the first flush prunes dead entries and rewrites live keys
-    relative (self-heals)."""
+    """A pre-#2199 index keyed by absolute paths still resolves to the right
+    digest on the unmoved root, and the first flush prunes dead entries and
+    rewrites live keys relative (self-heals).
+
+    A legacy entry carries no ``indexed_at_ns``, so it cannot be proven racily
+    clean and costs exactly one re-read before it is healed with a stamp — the
+    same one-time cost every entry pays on the first run after upgrading.
+    """
     _reset_stat_index()
     a = tmp_path / "a"
     a.mkdir()
     f1 = a / "f1.py"
     f1.write_text("x = 1\n")
+    _settle(f1)
     st = f1.stat()
     salt = "f1.py"
     digest = hashlib.sha256(f1.read_bytes() + b"\x00" + salt.encode()).hexdigest()
@@ -147,16 +171,20 @@ def test_legacy_absolute_index_migrates_gracefully(tmp_path, monkeypatch):
 
     reads = _count_read_bytes(monkeypatch)
     assert cache.file_hash(f1, a) == digest
-    assert reads["n"] == 0, "legacy absolute key should still serve a warm hit"
+    assert reads["n"] == 1, "unstamped legacy entry should cost exactly one re-read"
 
-    # Force a write so the self-heal is observable (a pure warm run leaves the
-    # index clean and flush is a no-op by design).
-    cache._stat_index_dirty = True
+    # ...and having paid it once, the healed entry is warm from then on.
+    assert cache.file_hash(f1, a) == digest
+    assert reads["n"] == 1, "healed entry should serve from the stat index"
+
     cache._flush_stat_index()
 
     on_disk = _read_index(a)
     assert set(on_disk) == {"f1.py"}, "dead absolute keys should be pruned"
     assert on_disk["f1.py"]["hashes"][salt] == digest
+    assert isinstance(on_disk["f1.py"].get("indexed_at_ns"), int), (
+        "self-heal should stamp the entry so it is trustable next run"
+    )
 
 
 def test_out_of_root_key_round_trips_absolute(tmp_path, monkeypatch):
@@ -165,6 +193,7 @@ def test_out_of_root_key_round_trips_absolute(tmp_path, monkeypatch):
     a.mkdir()
     outside = tmp_path / "outside.txt"
     outside.write_text("out of root\n")
+    _settle(outside)
 
     d1 = cache.file_hash(outside, a)
     cache._flush_stat_index()
@@ -195,6 +224,34 @@ def test_relative_key_wins_over_colliding_legacy_absolute(tmp_path):
 
     cache._ensure_stat_index(a)
     assert cache._stat_index[str(f1.resolve())]["hashes"]["f1.py"] == "fresh"
+
+
+def test_normalize_path_undoes_the_unc_long_path_prefix(monkeypatch):
+    r"""Since #4925 keys are normalized from the os_long_path() spelling, which
+    for a UNC share is ``\\?\UNC\server\share``. Stripping only ``\\?\`` left a
+    relative ``UNC\server\...`` key that the flush pruned as missing, so a
+    network or WSL share always wrote an empty stat-index.json."""
+    monkeypatch.setattr("sys.platform", "win32")
+    got = cache._normalize_path(Path("\\\\?\\UNC\\server\\share\\repo\\a.py"))
+    assert str(got) == "\\\\server\\share\\repo\\a.py"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended-length paths")
+def test_long_path_spelling_does_not_switch_the_root(tmp_path):
+    r"""Files are opened through os_long_path() (#4925), which spells the root
+    ``\\?\C:\...``. Binding the stat index to that spelling made the plain
+    cache_root that extract() passes look like a second root: a #3989 warning
+    and a mid-run flush on every Windows update."""
+    _reset_stat_index()
+    f1 = tmp_path / "f1.py"
+    f1.write_text("x = 1\n")
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="stat index switched")
+        cache.cached_word_count(f1, tmp_path, lambda p: 2)  # detect()
+        cache.file_hash(f1, tmp_path)
+        cache.load_cached(f1, tmp_path, cache_root=tmp_path)  # extract()
+    assert cache._stat_index_root == tmp_path.resolve()
 
 
 def test_semantic_cache_normalizes_absolute_source_file(tmp_path):
