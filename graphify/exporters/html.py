@@ -734,7 +734,14 @@ def to_html(
     # tag remains only as a fallback when the vendored copy is missing.
     vendored = Path(__file__).parent / "vendor" / "vis-network.min.js"
     if vendored.exists():
-        vis_script = "<script>\n" + vendored.read_text(encoding="utf-8").replace("</script", "<\\/script") + "\n</script>"
+        # The attribute names the pinned version (the tooltip XSS boundary is
+        # verified against 9.1.6) and keeps this block distinct from the bare
+        # <script> that holds the page's own code.
+        vis_script = (
+            '<script data-vendored="vis-network@9.1.6">\n'
+            + vendored.read_text(encoding="utf-8").replace("</script", "<\\/script")
+            + "\n</script>"
+        )
     else:
         vis_script = (
             '<script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"\n'

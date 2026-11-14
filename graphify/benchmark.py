@@ -7,9 +7,7 @@ from graphify.serve import _query_graph_text, _read_graph
 from graphify.paths import default_graph_json as _default_graph_json
 
 
-# Matches serve._subgraph_to_text's char budget (token_budget * 3) so the
-# benchmark and the production renderer estimate tokens the same way.
-_CHARS_PER_TOKEN = 3
+_CHARS_PER_TOKEN = 4  # standard approximation
 
 
 def _safe(unicode_char: str, ascii_fallback: str) -> str:
