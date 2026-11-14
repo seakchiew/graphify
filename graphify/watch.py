@@ -975,8 +975,9 @@ def _rebuild_code(
 
         # Include document files that have AST extractors (e.g. .md, .mdx, .qmd)
         # A `--code-only` graph (#4923) opted out of documents entirely, so the
-        # quick-scan is skipped; doc nodes already in the graph are preserved
-        # untouched (they are not in code_files, so reconcile keeps them).
+        # quick-scan is skipped. On this base an incremental rebuild leaves doc
+        # nodes already in the graph alone; a full rebuild drops them and needs
+        # --force past the shrink guard (upstream preserves them, #2923).
         ast_doc_files: list[Path] = []
         for doc_file in ([] if _code_only else detected['files'].get('document', [])):
             p = Path(doc_file)

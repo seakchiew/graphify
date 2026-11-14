@@ -169,6 +169,10 @@ def _cfg(root):
     return json.loads((root / "graphify-out/.graphify_build.json").read_text())
 
 
+# Fork backport onto 0.9.27: this base drops AST doc nodes on a full rebuild and
+# the shrink guard then refuses the write; upstream preserves them (#2923).
+# strict, so the marker has to go once the fork is synced past that change.
+@pytest.mark.xfail(strict=True, reason="needs upstream #2923, not in the 0.9.27 base")
 def test_doc_nodes_already_in_graph_survive_turning_scope_on(tmp_path):
     _corpus(tmp_path)
     assert _rebuild_code(tmp_path, acquire_lock=False)          # full graph, md present
