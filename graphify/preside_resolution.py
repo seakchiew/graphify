@@ -278,9 +278,25 @@ def resolve_cfml_framework(
             continue
         for suffix in _mapping_path_suffixes(dotted):
             comp = _component_for_suffix(suffix)
-            if comp is not None:
+            # A component never extends itself: a project class extending the
+            # same-named core/extension class outside the corpus would otherwise
+            # resolve to its own file by path suffix.
+            if comp is not None and comp["id"] != edge.get("source"):
                 edge["target"] = comp["id"]
                 break
+
+    # A project class extending the same-named core/extension class outside the
+    # corpus (handlers/General.cfc extends preside.system.handlers.General) gets
+    # its bare-name stub rewired onto its own node by the shared label pass.
+    # The build no longer drops pre-existing self-loops, so remove these here.
+    all_edges[:] = [
+        e for e in all_edges
+        if not (
+            e.get("relation") == "inherits"
+            and e.get("source") == e.get("target")
+            and _norm((node_by_id.get(e.get("source")) or {}).get("source_file")).lower().endswith((".cfc", ".cfm", ".cfml"))
+        )
+    ]
 
     # ---- 2. overrides chain ------------------------------------------------
     by_key: dict[tuple[str, str], list[tuple[int, dict]]] = {}
